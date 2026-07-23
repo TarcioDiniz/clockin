@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e3a8a">
+<meta name="description" content="Ponto — controle de jornada 100% no navegador, com armazenamento no seu GitHub.">
+<title>Ponto — Controle de Jornada</title>
+<style>
+  :root{
+    --azul-900:#1e3a8a;
+    --azul-700:#1d4ed8;
+    --azul-600:#2563eb;
+    --azul-100:#dbeafe;
+    --azul-50:#eff6ff;
+    --cinza-900:#0f172a;
+    --cinza-600:#475569;
+    --cinza-400:#94a3b8;
+    --cinza-200:#e2e8f0;
+    --cinza-100:#f1f5f9;
+    --fundo:#f8fafc;
+    --branco:#ffffff;
+    --verde:#047857;
+    --verde-claro:#d1fae5;
+    --vermelho:#b91c1c;
+    --vermelho-claro:#fee2e2;
+    --ambar:#b45309;
+    --ambar-claro:#fef3c7;
+    --sombra:0 1px 3px rgba(15,23,42,.08),0 4px 14px rgba(15,23,42,.06);
+    --raio:14px;
+    --abas-h:64px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--fundo);color:var(--cinza-900);
+    min-height:100vh;line-height:1.45;
+    padding-bottom:calc(var(--abas-h) + env(safe-area-inset-bottom,0px));
+  }
+  button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+  input,select,textarea{font:inherit;color:inherit}
+  .oculto{display:none !important}
+
+  /* ---------- Topo ---------- */
+  .topo{
+    position:sticky;top:0;z-index:20;
+    background:var(--azul-900);color:#fff;
+    padding:calc(12px + env(safe-area-inset-top,0px)) 16px 12px;
+    display:flex;align-items:center;justify-content:space-between;
+    box-shadow:0 2px 8px rgba(30,58,138,.25);
+  }
+  .topo h1{font-size:18px;font-weight:700;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+  .topo h1 svg{flex:0 0 auto}
+  .selo{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;letter-spacing:.4px}
+  .selo-demo{background:var(--ambar-claro);color:var(--ambar)}
+  .selo-online{background:var(--verde-claro);color:var(--verde)}
+  .selo-off{background:var(--cinza-200);color:var(--cinza-600)}
+
+  main{max-width:560px;margin:0 auto;padding:16px 16px 24px}
+
+  /* ---------- Telas ---------- */
+  .tela{display:none;animation:surgir .18s ease-out}
+  .tela.ativa{display:block}
+  @keyframes surgir{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  .cartao{background:var(--branco);border:1px solid var(--cinza-200);border-radius:var(--raio);box-shadow:var(--sombra);padding:16px;margin-bottom:14px}
+  .titulo-secao{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--cinza-600);margin-bottom:10px}
+
+  /* ---------- Hoje ---------- */
+  .relogio-bloco{text-align:center;padding:22px 16px}
+  #data-hoje{color:var(--cinza-600);font-size:15px;font-weight:500;text-transform:capitalize}
+  #relogio{
+    font-size:56px;font-weight:800;letter-spacing:1px;color:var(--azul-900);
+    font-variant-numeric:tabular-nums;line-height:1.15;margin:4px 0 2px;
+  }
+  #relogio small{font-size:26px;font-weight:600;color:var(--azul-600)}
+  .fuso{font-size:12px;color:var(--cinza-400)}
+
+  #btn-bater{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    width:100%;padding:20px;margin:14px 0 4px;
+    background:linear-gradient(180deg,var(--azul-600),var(--azul-700));
+    color:#fff;font-size:20px;font-weight:800;letter-spacing:1px;
+    border-radius:18px;box-shadow:0 6px 18px rgba(29,78,216,.35);
+    transition:transform .08s ease,box-shadow .2s ease,filter .2s;
+    -webkit-tap-highlight-color:transparent;user-select:none;
+  }
+  #btn-bater:active{transform:scale(.97)}
+  #btn-bater:disabled{filter:grayscale(.5) opacity(.7);cursor:wait}
+  #btn-bater.sucesso{background:linear-gradient(180deg,#059669,var(--verde));box-shadow:0 6px 18px rgba(4,120,87,.35)}
+
+  .resumo-dia{display:flex;gap:10px;margin-bottom:14px}
+  .kpi{flex:1;background:var(--branco);border:1px solid var(--cinza-200);border-radius:var(--raio);padding:12px;text-align:center;box-shadow:var(--sombra)}
+  .kpi .rotulo{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--cinza-600)}
+  .kpi .valor{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}
+  .pos{color:var(--verde)} .neg{color:var(--vermelho)} .neutro{color:var(--azul-900)}
+
+  .lista-batidas{list-style:none}
+  .lista-batidas li{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid var(--cinza-100)}
+  .lista-batidas li:last-child{border-bottom:none}
+  .ponto-bola{width:12px;height:12px;border-radius:50%;background:var(--azul-600);flex:0 0 auto}
+  .ponto-bola.saida{background:var(--cinza-400)}
+  .batida-rotulo{flex:1;font-weight:600}
+  .batida-hora{font-variant-numeric:tabular-nums;font-weight:700;color:var(--azul-900)}
+  .vazio{color:var(--cinza-400);text-align:center;padding:14px 0;font-size:14px}
+
+  .aviso{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:11px 13px;font-size:13.5px;margin-bottom:14px}
+  .aviso-amarelo{background:var(--ambar-claro);color:var(--ambar)}
+  .aviso-azul{background:var(--azul-50);color:var(--azul-900);border:1px solid var(--azul-100)}
+  .aviso-vermelho{background:var(--vermelho-claro);color:var(--vermelho)}
+
+  /* ---------- Histórico ---------- */
+  .nav-mes{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .nav-mes button{
+    width:44px;height:44px;border-radius:12px;background:var(--branco);
+    border:1px solid var(--cinza-200);box-shadow:var(--sombra);
+    font-size:20px;font-weight:700;color:var(--azul-700);
+  }
+  #rotulo-mes{font-size:17px;font-weight:800;text-transform:capitalize;color:var(--azul-900)}
+  .linha-dia{
+    display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+    padding:12px 14px;background:var(--branco);border:1px solid var(--cinza-200);
+    border-radius:12px;margin-bottom:8px;box-shadow:var(--sombra);
+    -webkit-tap-highlight-color:transparent;
+  }
+  .linha-dia:active{background:var(--azul-50)}
+  .dia-num{width:44px;text-align:center;flex:0 0 auto}
+  .dia-num .n{font-size:19px;font-weight:800;color:var(--azul-900);line-height:1.1}
+  .dia-num .s{font-size:11px;color:var(--cinza-400);text-transform:uppercase;font-weight:700}
+  .dia-info{flex:1;min-width:0}
+  .dia-batidas{font-size:13px;color:var(--cinza-600);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dia-total{font-size:13px;font-weight:600}
+  .dia-saldo{font-weight:800;font-variant-numeric:tabular-nums;font-size:15px;flex:0 0 auto}
+  .etiqueta{display:inline-block;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:99px;margin-left:6px;vertical-align:1px}
+  .et-tipo{background:var(--azul-100);color:var(--azul-700)}
+  .et-alerta{background:var(--ambar-claro);color:var(--ambar)}
+  .et-aberto{background:var(--verde-claro);color:var(--verde)}
+
+  /* ---------- Relatórios ---------- */
+  .campo{margin-bottom:12px}
+  .campo label{display:block;font-size:13px;font-weight:700;color:var(--cinza-600);margin-bottom:5px}
+  .campo input,.campo select,.campo textarea{
+    width:100%;padding:12px;border:1px solid var(--cinza-200);border-radius:10px;
+    background:var(--branco);font-size:15px;outline:none;
+  }
+  .campo input:focus,.campo select:focus,.campo textarea:focus{border-color:var(--azul-600);box-shadow:0 0 0 3px var(--azul-100)}
+  .campo .dica{font-size:12px;color:var(--cinza-400);margin-top:4px}
+  .linha-campos{display:flex;gap:10px}
+  .linha-campos .campo{flex:1}
+
+  .botoes{display:flex;gap:10px;margin-top:4px}
+  .btn{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:8px;
+    padding:13px;border-radius:12px;font-weight:700;font-size:15px;
+    transition:transform .08s;-webkit-tap-highlight-color:transparent;
+  }
+  .btn:active{transform:scale(.97)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn-primario{background:var(--azul-700);color:#fff;box-shadow:0 3px 10px rgba(29,78,216,.3)}
+  .btn-contorno{background:var(--branco);color:var(--azul-700);border:1.5px solid var(--azul-700)}
+  .btn-perigo{background:var(--branco);color:var(--vermelho);border:1.5px solid var(--vermelho)}
+
+  .tabela-envolt{overflow-x:auto;border:1px solid var(--cinza-200);border-radius:12px;background:var(--branco)}
+  table.previa{width:100%;border-collapse:collapse;font-size:13px}
+  table.previa th{
+    background:var(--azul-900);color:#fff;text-align:left;padding:9px 10px;
+    font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;
+  }
+  table.previa td{padding:8px 10px;border-top:1px solid var(--cinza-100);font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.previa tr:nth-child(even) td{background:var(--cinza-100)}
+  table.previa tfoot td{font-weight:800;background:var(--azul-50) !important;border-top:2px solid var(--azul-100)}
+
+  /* ---------- Config ---------- */
+  .alterna{display:flex;align-items:center;justify-content:space-between;padding:4px 0}
+  .alterna .txt b{display:block;font-size:15px}
+  .alterna .txt span{font-size:12.5px;color:var(--cinza-600)}
+  .chave{position:relative;width:52px;height:30px;flex:0 0 auto}
+  .chave input{opacity:0;width:0;height:0}
+  .chave .trilho{
+    position:absolute;inset:0;background:var(--cinza-200);border-radius:99px;transition:.2s;cursor:pointer;
+  }
+  .chave .trilho::before{
+    content:"";position:absolute;width:24px;height:24px;left:3px;top:3px;
+    background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.25);
+  }
+  .chave input:checked + .trilho{background:var(--azul-600)}
+  .chave input:checked + .trilho::before{transform:translateX(22px)}
+
+  /* ---------- Abas inferiores ---------- */
+  .abas{
+    position:fixed;bottom:0;left:0;right:0;z-index:30;
+    display:flex;background:var(--branco);border-top:1px solid var(--cinza-200);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    box-shadow:0 -2px 10px rgba(15,23,42,.06);
+  }
+  .aba{
+    flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+    padding:9px 4px 7px;color:var(--cinza-400);font-size:11px;font-weight:700;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .aba svg{width:24px;height:24px}
+  .aba.ativa{color:var(--azul-700)}
+
+  /* ---------- Modal edição de dia ---------- */
+  .modal-fundo{
+    position:fixed;inset:0;z-index:40;background:rgba(15,23,42,.5);
+    display:flex;align-items:flex-end;justify-content:center;
+    animation:surgir .15s ease-out;
+  }
+  .modal-caixa{
+    background:var(--branco);width:100%;max-width:560px;
+    border-radius:20px 20px 0 0;max-height:88vh;overflow-y:auto;
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));
+    animation:subir .2s ease-out;
+  }
+  @keyframes subir{from{transform:translateY(40px)}to{transform:none}}
+  .modal-topo{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .modal-topo h2{font-size:17px;color:var(--azul-900);text-transform:capitalize}
+  .btn-fechar{width:36px;height:36px;border-radius:50%;background:var(--cinza-100);font-size:18px;font-weight:700;color:var(--cinza-600)}
+  .edicao-batida{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .edicao-batida input[type="time"]{
+    flex:1;padding:10px;border:1px solid var(--cinza-200);border-radius:10px;font-size:16px;
+    font-variant-numeric:tabular-nums;background:var(--branco);
+  }
+  .btn-remover{width:42px;height:42px;border-radius:10px;background:var(--vermelho-claro);color:var(--vermelho);font-size:18px;font-weight:700;flex:0 0 auto}
+
+  /* ---------- Toast / carregando ---------- */
+  #toast{
+    position:fixed;left:50%;bottom:calc(var(--abas-h) + 18px + env(safe-area-inset-bottom,0px));
+    transform:translateX(-50%) translateY(20px);z-index:60;
+    background:var(--cinza-900);color:#fff;padding:11px 18px;border-radius:99px;
+    font-size:14px;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.3);
+    opacity:0;pointer-events:none;transition:.25s;max-width:92vw;text-align:center;
+  }
+  #toast.visivel{opacity:1;transform:translateX(-50%) translateY(0)}
+  #toast.erro{background:var(--vermelho)}
+  #toast.ok{background:var(--verde)}
+
+  .carregando{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--cinza-600);padding:22px 0;font-size:14px}
+  .girador{
+    width:20px;height:20px;border-radius:50%;flex:0 0 auto;
+    border:3px solid var(--azul-100);border-top-color:var(--azul-700);
+    animation:girar .8s linear infinite;
+  }
+  @keyframes girar{to{transform:rotate(360deg)}}
+
+  @media (min-width:600px){
+    #relogio{font-size:64px}
+    .abas{max-width:560px;left:50%;transform:translateX(-50%);border-radius:16px 16px 0 0;border:1px solid var(--cinza-200);border-bottom:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="topo">
+  <h1>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+    Ponto
+  </h1>
+  <span id="selo-estado" class="selo selo-off">—</span>
+</header>
+
+<main>
+
+  <!-- ============ TELA HOJE ============ -->
+  <section id="tela-hoje" class="tela ativa" aria-label="Hoje">
+    <div id="aviso-sem-config" class="aviso aviso-azul oculto">
+      <span>Bem-vindo! Para começar, configure seu repositório GitHub ou ative o modo demonstração na aba <b>Config</b>.</span>
+    </div>
+
+    <div class="cartao relogio-bloco">
+      <div id="data-hoje">—</div>
+      <div id="relogio">--:--<small>:--</small></div>
+      <div class="fuso">Horário de Brasília (America/Sao_Paulo)</div>
+      <button id="btn-bater" type="button">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg>
+        BATER PONTO
+      </button>
+    </div>
+
+    <div class="resumo-dia">
+      <div class="kpi">
+        <div class="rotulo">Trabalhado</div>
+        <div class="valor neutro" id="kpi-total">00:00</div>
+      </div>
+      <div class="kpi">
+        <div class="rotulo">Meta</div>
+        <div class="valor neutro" id="kpi-meta">08:00</div>
+      </div>
+      <div class="kpi">
+        <div class="rotulo">Saldo</div>
+        <div class="valor" id="kpi-saldo">-08:00</div>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Batidas de hoje</div>
+      <div id="hoje-avisos"></div>
+      <ul class="lista-batidas" id="lista-batidas-hoje"></ul>
+      <div id="hoje-vazio" class="vazio">Nenhuma batida ainda. Toque no botão acima para registrar.</div>
+      <div id="hoje-carregando" class="carregando oculto"><span class="girador"></span> Carregando…</div>
+    </div>
+  </section>
+
+  <!-- ============ TELA HISTÓRICO ============ -->
+  <section id="tela-historico" class="tela" aria-label="Histórico">
+    <div class="nav-mes">
+      <button id="btn-mes-ant" type="button" aria-label="Mês anterior">‹</button>
+      <span id="rotulo-mes">—</span>
+      <button id="btn-mes-prox" type="button" aria-label="Próximo mês">›</button>
+    </div>
+    <div class="resumo-dia">
+      <div class="kpi">
+        <div class="rotulo">Trabalhado</div>
+        <div class="valor neutro" id="hist-total">—</div>
+      </div>
+      <div class="kpi">
+        <div class="rotulo">Meta</div>
+        <div class="valor neutro" id="hist-meta">—</div>
+      </div>
+      <div class="kpi">
+        <div class="rotulo">Saldo</div>
+        <div class="valor" id="hist-saldo">—</div>
+      </div>
+    </div>
+    <div id="hist-carregando" class="carregando oculto"><span class="girador"></span> Carregando mês…</div>
+    <div id="hist-erro" class="aviso aviso-vermelho oculto"></div>
+    <div id="lista-dias"></div>
+    <p class="dica" style="text-align:center;color:var(--cinza-400);font-size:12.5px;margin-top:6px">Toque em um dia para corrigir batidas, observação ou tipo.</p>
+  </section>
+
+  <!-- ============ TELA RELATÓRIOS ============ -->
+  <section id="tela-relatorios" class="tela" aria-label="Relatórios">
+    <div class="cartao">
+      <div class="titulo-secao">Gerar relatório</div>
+      <div class="linha-campos">
+        <div class="campo">
+          <label for="rel-tipo">Tipo</label>
+          <select id="rel-tipo">
+            <option value="diario">Diário</option>
+            <option value="semanal">Semanal</option>
+            <option value="mensal" selected>Mensal</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="rel-data">Data de referência</label>
+          <input type="date" id="rel-data">
+        </div>
+      </div>
+      <div class="botoes">
+        <button class="btn btn-primario" id="btn-pdf" type="button" disabled>Baixar PDF</button>
+        <button class="btn btn-contorno" id="btn-excel" type="button" disabled>Baixar Excel</button>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Prévia <span id="rel-periodo" style="text-transform:none;font-weight:600"></span></div>
+      <div id="rel-carregando" class="carregando oculto"><span class="girador"></span> Calculando…</div>
+      <div id="rel-erro" class="aviso aviso-vermelho oculto"></div>
+      <div class="tabela-envolt oculto" id="rel-tabela-envolt">
+        <table class="previa" id="rel-tabela"></table>
+      </div>
+      <div id="rel-vazio" class="vazio oculto">Sem dados no período selecionado.</div>
+    </div>
+  </section>
+
+  <!-- ============ TELA CONFIG ============ -->
+  <section id="tela-config" class="tela" aria-label="Configurações">
+    <div id="config-boasvindas" class="aviso aviso-azul oculto">
+      <span><b>Primeiro acesso?</b> Este app guarda seus registros de ponto em um repositório GitHub seu (um arquivo JSON por mês) — sem servidor, sem cadastro. Preencha os dados abaixo, ou ative o <b>modo demonstração</b> para testar tudo salvando apenas neste aparelho.</span>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Colaborador</div>
+      <div class="campo">
+        <label for="cfg-nome">Nome completo</label>
+        <input type="text" id="cfg-nome" placeholder="Ex.: Maria da Silva" autocomplete="name">
+        <div class="dica">Aparece no cabeçalho dos relatórios PDF e Excel.</div>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Repositório GitHub</div>
+      <div class="campo">
+        <label for="cfg-owner">Usuário/organização (owner)</label>
+        <input type="text" id="cfg-owner" placeholder="Ex.: maria-silva" autocapitalize="none" autocorrect="off">
+      </div>
+      <div class="campo">
+        <label for="cfg-repo">Repositório</label>
+        <input type="text" id="cfg-repo" placeholder="Ex.: meu-ponto" autocapitalize="none" autocorrect="off">
+      </div>
+      <div class="campo">
+        <label for="cfg-token">Token de acesso (fine-grained)</label>
+        <input type="password" id="cfg-token" placeholder="github_pat_…" autocomplete="off">
+        <div class="dica">Crie um token com permissão de <b>Contents: Read and write</b> apenas nesse repositório.</div>
+      </div>
+      <div class="aviso aviso-amarelo">
+        <span><b>Atenção:</b> o token fica salvo apenas neste navegador (localStorage). Não use este app em computador compartilhado e prefira um repositório privado dedicado só ao ponto.</span>
+      </div>
+      <div class="botoes">
+        <button class="btn btn-contorno" id="btn-testar" type="button">Testar conexão</button>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="alterna">
+        <div class="txt">
+          <b>Modo demonstração</b>
+          <span>Salva tudo só neste aparelho, sem GitHub.</span>
+        </div>
+        <label class="chave">
+          <input type="checkbox" id="cfg-demo">
+          <span class="trilho"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="botoes">
+      <button class="btn btn-primario" id="btn-salvar-config" type="button">Salvar configurações</button>
+    </div>
+  </section>
+</main>
+
+<!-- ============ MODAL EDIÇÃO DE DIA ============ -->
+<div id="modal-dia" class="modal-fundo oculto" role="dialog" aria-modal="true">
+  <div class="modal-caixa">
+    <div class="modal-topo">
+      <h2 id="modal-titulo">—</h2>
+      <button class="btn-fechar" id="btn-modal-fechar" type="button" aria-label="Fechar">✕</button>
+    </div>
+    <div class="campo">
+      <label>Batidas</label>
+      <div id="modal-batidas"></div>
+      <button class="btn btn-contorno" id="btn-add-batida" type="button" style="width:100%">+ Adicionar batida</button>
+    </div>
+    <div class="campo">
+      <label for="modal-tipo">Tipo do dia</label>
+      <select id="modal-tipo">
+        <option value="normal">Normal</option>
+        <option value="feriado">Feriado</option>
+        <option value="ferias">Férias</option>
+        <option value="atestado">Atestado</option>
+        <option value="abono">Abono</option>
+      </select>
+      <div class="dica">Feriado, férias, atestado e abono zeram a meta do dia.</div>
+    </div>
+    <div class="campo">
+      <label for="modal-obs">Observação</label>
+      <textarea id="modal-obs" rows="2" placeholder="Ex.: esqueci de bater na volta do almoço"></textarea>
+    </div>
+    <div class="botoes">
+      <button class="btn btn-primario" id="btn-modal-salvar" type="button">Salvar dia</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status"></div>
+
+<!-- ============ NAVEGAÇÃO ============ -->
+<nav class="abas">
+  <button class="aba ativa" data-aba="hoje" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+    Hoje
+  </button>
+  <button class="aba" data-aba="historico" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+    Histórico
+  </button>
+  <button class="aba" data-aba="relatorios" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M9 15l2 2 4-4"/></svg>
+    Relatórios
+  </button>
+  <button class="aba" data-aba="config" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.98 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.98a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.02A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.02A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></svg>
+    Config
+  </button>
+</nav>
+
+<!-- Bibliotecas por CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<!-- Módulos do app (ordem obrigatória) -->
+<script src="js/storage.js"></script>
+<script src="js/reports.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
