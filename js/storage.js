@@ -27,6 +27,7 @@
   var FUSO = 'America/Sao_Paulo';
   var CHAVE_CONFIG = 'ponto.config';
   var CHAVE_PENDENTES = 'ponto.pendentes';
+  var CHAVE_ULTIMO_ERRO = 'ponto.ultimoErro';
   var PREFIXO_CACHE = 'ponto.cache.'; // + AAAA-MM
   var API_BASE = 'https://api.github.com';
   var MAX_TENTATIVAS = 3; // tentativas em conflito 409/422
@@ -163,10 +164,12 @@
    */
   function setConfig(nova) {
     var atual = getConfig();
+    // .trim() sempre: espaço/quebra de linha invisível colado junto com o
+    // token (colar no celular) é causa clássica de 401 difícil de enxergar.
     var cfg = {
-      owner: nova.owner !== undefined ? nova.owner : atual.owner,
-      repo: nova.repo !== undefined ? nova.repo : atual.repo,
-      token: nova.token !== undefined ? nova.token : atual.token,
+      owner: String(nova.owner !== undefined ? nova.owner : atual.owner).trim(),
+      repo: String(nova.repo !== undefined ? nova.repo : atual.repo).trim(),
+      token: String(nova.token !== undefined ? nova.token : atual.token).trim(),
       demo: nova.demo !== undefined ? !!nova.demo : atual.demo
     };
     localStorage.setItem(CHAVE_CONFIG, JSON.stringify(cfg));
@@ -291,6 +294,46 @@
   }
 
   // ---------------------------------------------------------------
+  // Diagnóstico de sincronização ("ponto.ultimoErro")
+  // ---------------------------------------------------------------
+
+  /** Quantidade de registros aguardando envio ao GitHub. */
+  function contarPendentes() {
+    return lerPendentes().length;
+  }
+
+  /** Persiste a última mensagem de erro de escrita (com timestamp). */
+  function registrarUltimoErro(mensagem) {
+    try {
+      localStorage.setItem(CHAVE_ULTIMO_ERRO, JSON.stringify({
+        mensagem: String(mensagem || 'Erro desconhecido'),
+        ts: Date.now()
+      }));
+    } catch (e) { /* localStorage cheio/indisponível: ignora */ }
+  }
+
+  /** Limpa o registro de erro (chamado quando uma sincronização dá certo). */
+  function limparUltimoErro() {
+    try { localStorage.removeItem(CHAVE_ULTIMO_ERRO); } catch (e) { /* ignora */ }
+  }
+
+  /**
+   * Última falha de escrita/sincronização registrada.
+   * @returns {{mensagem:string, ts:number}|null}
+   */
+  function ultimoErroSync() {
+    try {
+      var bruto = localStorage.getItem(CHAVE_ULTIMO_ERRO);
+      if (!bruto) return null;
+      var obj = JSON.parse(bruto);
+      if (!obj || !obj.mensagem) return null;
+      return { mensagem: String(obj.mensagem), ts: obj.ts || 0 };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------
   // GitHub Contents API
   // ---------------------------------------------------------------
 
@@ -331,11 +374,11 @@
   function erroHttp(status, contexto) {
     var msg;
     if (status === 401) {
-      msg = 'Token do GitHub inválido ou expirado. Verifique o token nas configurações.';
+      msg = 'Token do GitHub inválido ou expirado (HTTP 401). Verifique o token nas configurações.';
     } else if (status === 403) {
-      msg = 'Acesso negado pelo GitHub (403). Verifique as permissões do token ou o limite de requisições.';
+      msg = 'Acesso negado pelo GitHub (HTTP 403). Verifique as permissões do token ou o limite de requisições.';
     } else if (status === 404) {
-      msg = 'Repositório ou arquivo não encontrado (404). Confira usuário/repositório nas configurações.';
+      msg = 'Repositório ou arquivo não encontrado (HTTP 404). Confira usuário/repositório nas configurações.';
     } else {
       msg = 'Erro do GitHub (' + status + ')' + (contexto ? ' ao ' + contexto : '') + '.';
     }
@@ -505,6 +548,7 @@
             // Gravação confirmada: a versão recém-salva do dia é a mais
             // recente — pendência antiga desse dia fica obsoleta.
             removerPendente(dataISO);
+            limparUltimoErro();
             return diaLimpo;
           })
           .catch(function (e) {
@@ -529,6 +573,7 @@
         // está no cache local e nunca deve desaparecer sem ser confirmado
         // no remoto — o próximo sync mescla e envia.
         enfileirarPendente(dataISO, diaLimpo, msg);
+        registrarUltimoErro(e && e.message);
         if (e && e.rede) {
           var copia = normalizarDia(diaLimpo);
           copia.pendente = true;
@@ -554,15 +599,29 @@
     }
     var dataISO = hojeISO();
     var partes = dataISO.split('-'); // [AAAA, MM, DD]
+    var chave = mesDaData(dataISO);
 
-    return carregarMes(partes[0], partes[1]).then(function (res) {
-      var dia = res.dias[dataISO] || { batidas: [], obs: '', tipo: 'normal' };
-      var atualizado = normalizarDia(dia);
-      atualizado.batidas.push(hora);
-      atualizado.batidas.sort();
-      var msg = 'ponto: batida ' + dataISO + ' ' + hora;
-      return salvarDia(dataISO, atualizado, msg);
-    });
+    return carregarMes(partes[0], partes[1])
+      .catch(function () {
+        // GET falhou (ex.: token inválido). A batida NÃO pode se perder:
+        // parte do cache local (+ pendências) e deixa o PUT/fila cuidarem
+        // do envio — o erro real de escrita sobe para a UI mais adiante.
+        var c = lerCache(chave);
+        return { dias: aplicarPendencias(chave, c.dias), sha: c.sha };
+      })
+      .then(function (res) {
+        var dia = res.dias[dataISO] || { batidas: [], obs: '', tipo: 'normal' };
+        var atualizado = normalizarDia(dia);
+        atualizado.batidas.push(hora);
+        atualizado.batidas.sort();
+        var msg = 'ponto: batida ' + dataISO + ' ' + hora;
+        return salvarDia(dataISO, atualizado, msg).catch(function (e) {
+          // A batida já está no cache local e na fila de pendências.
+          // Anexa o dia ao erro para a UI conseguir mostrar o estado local.
+          if (e) e.dia = atualizado;
+          throw e;
+        });
+      });
   }
 
   // ---------------------------------------------------------------
@@ -612,6 +671,7 @@
           });
           gravarPendentes(atual);
           enviadas++;
+          limparUltimoErro(); // sincronização deu certo
           return proxima();
         })
         .catch(function (e) {
@@ -629,8 +689,9 @@
         sincronizando = false;
         return { enviadas: enviadas, restantes: lerPendentes().length };
       })
-      .catch(function () {
+      .catch(function (e) {
         sincronizando = false;
+        registrarUltimoErro(e && e.message);
         return { enviadas: enviadas, restantes: lerPendentes().length };
       });
   }
@@ -671,19 +732,21 @@
         if (resp.status === 401) {
           return {
             ok: false,
-            mensagem: 'Token do GitHub inválido ou expirado. Gere um novo token e atualize as configurações.'
+            status: 401,
+            mensagem: 'Falha (HTTP 401): token do GitHub inválido ou expirado. Gere um novo token e atualize as configurações.'
           };
         }
         if (resp.status === 404) {
           return {
             ok: false,
+            status: 404,
             mensagem:
-              'Repositório "' + cfg.owner + '/' + cfg.repo +
+              'Falha (HTTP 404): repositório "' + cfg.owner + '/' + cfg.repo +
               '" não encontrado. Confira o nome ou as permissões do token.'
           };
         }
         if (!resp.ok) {
-          return { ok: false, mensagem: 'Erro do GitHub (' + resp.status + ') ao testar a conexão.' };
+          return { ok: false, status: resp.status, mensagem: 'Falha (HTTP ' + resp.status + ') ao testar a conexão com o GitHub.' };
         }
         return resp.json().then(function (json) {
           if (json.permissions && json.permissions.push === false) {
@@ -720,6 +783,8 @@
     // Sincronização / diagnóstico
     sincronizarPendentes: sincronizarPendentes,
     testarConexao: testarConexao,
+    contarPendentes: contarPendentes,
+    ultimoErroSync: ultimoErroSync,
     // Utilitários de data no fuso America/Sao_Paulo (úteis para a UI)
     hojeISO: hojeISO,
     horaAgoraHHMM: horaAgoraHHMM

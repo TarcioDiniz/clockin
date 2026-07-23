@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1e3a8a">
 <meta name="description" content="Ponto — controle de jornada 100% no navegador, com armazenamento no seu GitHub.">
+<link rel="manifest" href="manifest.json?v=2">
+<link rel="apple-touch-icon" href="icon-192.png?v=2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="clockin">
 <title>Ponto — Controle de Jornada</title>
 <style>
   :root{
@@ -104,6 +109,26 @@
   .batida-rotulo{flex:1;font-weight:600}
   .batida-hora{font-variant-numeric:tabular-nums;font-weight:700;color:var(--azul-900)}
   .vazio{color:var(--cinza-400);text-align:center;padding:14px 0;font-size:14px}
+
+  /* Banner de pendências de sincronização (tela Hoje) */
+  #banner-pendentes{
+    display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;
+    background:#ea580c;color:#fff;border-radius:12px;padding:12px 14px;
+    font-size:13.5px;font-weight:600;line-height:1.4;margin:12px 0 0;
+    box-shadow:0 4px 12px rgba(234,88,12,.35);cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #banner-pendentes:active{filter:brightness(.92)}
+  #banner-pendentes .girador{border-color:rgba(255,255,255,.4);border-top-color:#fff}
+
+  /* Card de intervalo (almoço) na tela Hoje */
+  #card-intervalo{border-left:5px solid var(--ambar)}
+  #card-intervalo.completo{border-left-color:var(--verde);background:var(--verde-claro)}
+  #card-intervalo .int-titulo{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--ambar);margin-bottom:6px}
+  #card-intervalo.completo .int-titulo{color:var(--verde)}
+  #card-intervalo .int-tempo{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--cinza-900)}
+  #card-intervalo .int-msg{font-size:13.5px;color:var(--cinza-600);margin-top:2px}
+  #card-intervalo.completo .int-msg{color:var(--verde);font-weight:700}
 
   .aviso{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:11px 13px;font-size:13.5px;margin-bottom:14px}
   .aviso-amarelo{background:var(--ambar-claro);color:var(--ambar)}
@@ -273,6 +298,7 @@
       <div id="data-hoje">—</div>
       <div id="relogio">--:--<small>:--</small></div>
       <div class="fuso">Horário de Brasília (America/Sao_Paulo)</div>
+      <button id="banner-pendentes" class="oculto" type="button" aria-live="polite"></button>
       <button id="btn-bater" type="button">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg>
         BATER PONTO
@@ -292,6 +318,12 @@
         <div class="rotulo">Saldo</div>
         <div class="valor" id="kpi-saldo">-08:00</div>
       </div>
+    </div>
+
+    <div class="cartao oculto" id="card-intervalo" aria-live="polite">
+      <div class="int-titulo" id="int-titulo">Intervalo em andamento</div>
+      <div class="int-tempo" id="int-tempo">—</div>
+      <div class="int-msg" id="int-msg"></div>
     </div>
 
     <div class="cartao">
@@ -406,6 +438,22 @@
     <div class="cartao">
       <div class="alterna">
         <div class="txt">
+          <b>Lembrar de bater o ponto ao fim do intervalo (1h)</b>
+          <span>Notificação 1h após a saída para o almoço.</span>
+        </div>
+        <label class="chave">
+          <input type="checkbox" id="cfg-lembrete" checked>
+          <span class="trilho"></span>
+        </label>
+      </div>
+      <div class="dica" style="margin-top:8px;font-size:12px;color:var(--cinza-400)">
+        No iPhone, o lembrete toca se o app estiver aberto ou em segundo plano recente. Com o app fechado, use também um alarme.
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="alterna">
+        <div class="txt">
           <b>Modo demonstração</b>
           <span>Salva tudo só neste aparelho, sem GitHub.</span>
         </div>
@@ -455,6 +503,21 @@
   </div>
 </div>
 
+<!-- ============ MODAL INTERVALO CURTO ============ -->
+<div id="modal-intervalo" class="modal-fundo oculto" role="dialog" aria-modal="true">
+  <div class="modal-caixa">
+    <div class="modal-topo">
+      <h2 style="text-transform:none">Intervalo abaixo do mínimo</h2>
+      <button class="btn-fechar" id="btn-intervalo-fechar" type="button" aria-label="Fechar">✕</button>
+    </div>
+    <p id="modal-intervalo-texto" style="margin-bottom:16px;font-size:15px;color:var(--cinza-900)"></p>
+    <div class="botoes">
+      <button class="btn btn-contorno" id="btn-intervalo-voltar" type="button">Voltar</button>
+      <button class="btn btn-primario" id="btn-intervalo-confirmar" type="button">Registrar assim mesmo</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" role="status"></div>
 
 <!-- ============ NAVEGAÇÃO ============ -->
@@ -482,9 +545,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-<!-- Módulos do app (ordem obrigatória) -->
-<script src="js/storage.js"></script>
-<script src="js/reports.js"></script>
-<script src="js/app.js"></script>
+<!-- Módulos do app (ordem obrigatória; ?v=2 evita JS antigo do GitHub Pages) -->
+<script src="js/storage.js?v=2"></script>
+<script src="js/reports.js?v=2"></script>
+<script src="js/app.js?v=2"></script>
 </body>
 </html>

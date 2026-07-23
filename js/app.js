@@ -6,6 +6,9 @@
   'use strict';
 
   var TZ = 'America/Sao_Paulo';
+  // Regra do usuário: intervalo (almoço) mínimo de 1h. Apenas UI — o motor
+  // de cálculo (PontoCalc) não é afetado.
+  var INTERVALO_MINIMO_MIN = 60;
 
   /* ================================================================
    * Datas seguras (sempre componentes locais de America/Sao_Paulo)
@@ -171,14 +174,15 @@
       if (estado.aba === 'hoje') carregarHoje();
       return;
     }
-    // A cada minuto, re-renderiza a tela Hoje se houver período em aberto,
-    // para o KPI "Trabalhado" acompanhar o tempo correndo.
+    // A cada minuto, re-renderiza a tela Hoje se houver período em aberto
+    // (KPI "Trabalhado" correndo) OU intervalo em andamento (2 batidas —
+    // card do intervalo mínimo de 1h).
     var minutoAtual = s.slice(0, 5);
     if (minutoAtual !== ultimoMinutoTick) {
       ultimoMinutoTick = minutoAtual;
-      if (estado.aba === 'hoje' && estado.diaHoje &&
-          (estado.diaHoje.batidas || []).length % 2 === 1) {
-        renderHoje(estado.diaHoje);
+      if (estado.aba === 'hoje' && estado.diaHoje) {
+        var nb = (estado.diaHoje.batidas || []).length;
+        if (nb % 2 === 1 || nb === 2) renderHoje(estado.diaHoje);
       }
     }
   }
@@ -194,6 +198,79 @@
 
   function renderDataHoje() {
     dataHojeEl.textContent = fmtDataLonga.format(new Date());
+  }
+
+  /* Minutos decorridos desde "HH:MM" até agora (fuso SP). null se inválido
+   * ou se "agora" for antes da hora dada (ex.: virada de dia). */
+  function minutosDesde(hhmm) {
+    var ini = hhmmMin(hhmm);
+    var agora = hhmmMin(window.PontoStorage.horaAgoraHHMM());
+    if (ini === null || agora === null || agora < ini) return null;
+    return agora - ini;
+  }
+
+  /* ---------- Card "Intervalo em andamento" (2 batidas = saiu p/ almoço) */
+  function renderIntervalo(dia) {
+    var card = $('card-intervalo');
+    var b = (dia && dia.batidas) || [];
+    if (b.length !== 2) { card.classList.add('oculto'); return; }
+    var dec = minutosDesde(b[1]);
+    if (dec === null) { card.classList.add('oculto'); return; }
+
+    $('int-tempo').textContent = window.PontoCalc.fmtMin(dec);
+    if (dec < INTERVALO_MINIMO_MIN) {
+      card.classList.remove('completo');
+      $('int-titulo').textContent = 'Intervalo em andamento';
+      $('int-msg').textContent = 'Faltam ' + (INTERVALO_MINIMO_MIN - dec) +
+        ' min para completar o intervalo mínimo de 1h.';
+    } else {
+      card.classList.add('completo');
+      $('int-titulo').textContent = 'Intervalo mínimo cumprido ✓';
+      $('int-msg').textContent = 'Você já pode registrar o retorno.';
+    }
+    card.classList.remove('oculto');
+  }
+
+  /* ---------- Banner de pendências de sincronização (tela Hoje) */
+  function atualizarBannerPendentes() {
+    var el = $('banner-pendentes');
+    if (!el || !window.PontoStorage.contarPendentes) return;
+    var cfg = configAtual();
+    var n = window.PontoStorage.contarPendentes();
+    if (!cfg || cfg.demo || n === 0) { el.classList.add('oculto'); return; }
+    var erro = window.PontoStorage.ultimoErroSync ? window.PontoStorage.ultimoErroSync() : null;
+    var motivo = (erro && erro.mensagem) ? erro.mensagem : 'aguardando conexão com o GitHub';
+    el.innerHTML = '<span>⚠</span><span>' + n +
+      ' registro(s) no celular aguardando envio ao GitHub — Motivo: ' + esc(motivo) +
+      ' <b><u>Toque para reenviar.</u></b></span>';
+    el.classList.remove('oculto');
+  }
+
+  var reenviando = false;
+  function reenviarPendentes() {
+    if (reenviando || !window.PontoStorage.sincronizarPendentes) return;
+    reenviando = true;
+    var el = $('banner-pendentes');
+    el.innerHTML = '<span class="girador"></span><span>Reenviando registros ao GitHub…</span>';
+    window.PontoStorage.sincronizarPendentes().then(function (r) {
+      reenviando = false;
+      r = r || { enviadas: 0, restantes: 0 };
+      if (r.restantes === 0 && r.enviadas > 0) {
+        toast(r.enviadas + ' registro(s) enviado(s) ao GitHub com sucesso.', 'ok');
+        vibrar(60);
+        carregarHoje();
+      } else if (r.enviadas > 0) {
+        toast(r.enviadas + ' enviado(s), ' + r.restantes + ' ainda pendente(s).', 'erro');
+        atualizarBannerPendentes();
+      } else {
+        var erro = window.PontoStorage.ultimoErroSync ? window.PontoStorage.ultimoErroSync() : null;
+        toast('Falha ao reenviar: ' + ((erro && erro.mensagem) || 'erro desconhecido'), 'erro');
+        atualizarBannerPendentes();
+      }
+    }).catch(function () {
+      reenviando = false;
+      atualizarBannerPendentes();
+    });
   }
 
   function renderHoje(dia) {
@@ -247,6 +324,11 @@
       }
       lista.innerHTML = html;
     }
+
+    // Intervalo mínimo (1h) + lembrete + banner de pendências
+    renderIntervalo(dia);
+    if (b.length === 2) agendarLembrete(dia); else cancelarLembrete();
+    atualizarBannerPendentes();
   }
 
   function carregarHoje() {
@@ -276,10 +358,11 @@
         if (estado.aba === 'hoje') carregarHoje();
         if (estado.aba === 'historico') carregarHistorico();
       }
+      atualizarBannerPendentes();
     }).catch(function () { /* tenta de novo no próximo evento */ });
   }
 
-  function baterPonto() {
+  function baterPonto(confirmado) {
     var btn = $('btn-bater');
     var cfg = configAtual();
     if (!configPronta(cfg)) {
@@ -287,6 +370,21 @@
       mostrarAba('config');
       return;
     }
+
+    // 3ª batida com intervalo < 1h: pede confirmação (não bloqueia).
+    if (!confirmado) {
+      var atual = (estado.diaHoje && estado.diaHoje.batidas) || [];
+      if (atual.length === 2) {
+        var dec = minutosDesde(atual[1]);
+        if (dec !== null && dec < INTERVALO_MINIMO_MIN) {
+          $('modal-intervalo-texto').textContent =
+            'Seu intervalo tem só ' + dec + ' min — o mínimo é 1h. Registrar retorno mesmo assim?';
+          $('modal-intervalo').classList.remove('oculto');
+          return;
+        }
+      }
+    }
+
     btn.disabled = true;
     window.PontoStorage.baterPonto().then(function (dia) {
       vibrar([80, 40, 80]);
@@ -294,14 +392,102 @@
       setTimeout(function () { btn.classList.remove('sucesso'); }, 1200);
       var b = (dia && dia.batidas) || [];
       var ultima = b.length ? b[b.length - 1] : '';
-      toast('Ponto registrado' + (ultima ? ' às ' + ultima : '') + '.', 'ok');
-      renderHoje(dia);
+      if (dia && dia.pendente) {
+        // Falha de rede: o storage resolve com pendente=true (nada se perdeu).
+        var erroP = window.PontoStorage.ultimoErroSync ? window.PontoStorage.ultimoErroSync() : null;
+        toast('Batida gravada no celular. Envio ao GitHub falhou: ' +
+          ((erroP && erroP.mensagem) || 'sem conexão') + ' Reenvie pelo aviso na tela.', 'erro');
+      } else {
+        toast('Ponto registrado' + (ultima ? ' às ' + ultima : '') + '.', 'ok');
+      }
+      renderHoje(dia); // agenda/cancela o lembrete e atualiza o banner
     }).catch(function (err) {
       vibrar(250);
-      toast(msgErro(err), 'erro');
+      if (err && err.dia) {
+        // A batida ESTÁ salva no aparelho (cache + fila de pendências);
+        // só o envio ao GitHub falhou. Deixa isso claro e mostra o banner.
+        toast('Batida gravada no celular. Envio ao GitHub falhou: ' +
+          msgErro(err) + ' Reenvie pelo aviso na tela.', 'erro');
+        renderHoje(err.dia);
+      } else {
+        toast(msgErro(err), 'erro');
+        atualizarBannerPendentes();
+      }
     }).then(function () {
       btn.disabled = false;
     });
+  }
+
+  function fecharModalIntervalo() { $('modal-intervalo').classList.add('oculto'); }
+
+  /* ================================================================
+   * LEMBRETE DE FIM DE INTERVALO (1h após a 2ª batida)
+   * setTimeout enquanto o app está aberto; reagendado ao reabrir.
+   * ================================================================ */
+  var lembreteTimer = null;
+
+  function lembreteAtivo() {
+    try { return localStorage.getItem('ponto.lembrete') !== '0'; } catch (e) { return true; }
+  }
+  function setLembreteAtivo(v) {
+    try { localStorage.setItem('ponto.lembrete', v ? '1' : '0'); } catch (e) { /* ignora */ }
+  }
+
+  function cancelarLembrete() {
+    if (lembreteTimer !== null) { clearTimeout(lembreteTimer); lembreteTimer = null; }
+  }
+
+  /* Agenda a notificação para completar 60 min desde a 2ª batida.
+   * Reagendar é idempotente: sempre recalcula o tempo restante (ex.: app
+   * reaberto 40 min depois da saída -> dispara em 20 min). */
+  function agendarLembrete(dia) {
+    cancelarLembrete();
+    if (!lembreteAtivo()) return;
+    var b = (dia && dia.batidas) || [];
+    if (b.length !== 2) return;
+    var dec = minutosDesde(b[1]);
+    if (dec === null || dec >= INTERVALO_MINIMO_MIN) return;
+    lembreteTimer = setTimeout(dispararLembrete, (INTERVALO_MINIMO_MIN - dec) * 60000);
+  }
+
+  function dispararLembrete() {
+    lembreteTimer = null;
+    // Só notifica se ainda estiver no intervalo (a 3ª batida cancela).
+    var b = (estado.diaHoje && estado.diaHoje.batidas) || [];
+    if (b.length !== 2 || !lembreteAtivo()) return;
+    vibrar([200, 100, 200]);
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    var titulo = 'Intervalo de 1h completo — hora de bater o retorno!';
+    var opcoes = {
+      body: 'Toque para abrir o Ponto e registrar o retorno do almoço.',
+      icon: 'icon-192.png',
+      badge: 'icon-192.png',
+      tag: 'ponto-intervalo',
+      vibrate: [200, 100, 200]
+    };
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker.getRegistration().then(function (reg) {
+        if (reg && reg.showNotification) reg.showNotification(titulo, opcoes);
+        else new Notification(titulo, opcoes);
+      }).catch(function () {
+        try { new Notification(titulo, opcoes); } catch (e) { /* ignora */ }
+      });
+    } else {
+      try { new Notification(titulo, opcoes); } catch (e) { /* ignora */ }
+    }
+  }
+
+  function aoMudarLembrete() {
+    var ligado = $('cfg-lembrete').checked;
+    setLembreteAtivo(ligado);
+    if (ligado) {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      agendarLembrete(estado.diaHoje);
+    } else {
+      cancelarLembrete();
+    }
   }
 
   /* ================================================================
@@ -597,6 +783,7 @@
     $('cfg-repo').value = cfg.repo || 'clockin-data';
     $('cfg-token').value = cfg.token || '';
     $('cfg-demo').checked = !!cfg.demo;
+    $('cfg-lembrete').checked = lembreteAtivo();
     $('config-boasvindas').classList.toggle('oculto', configPronta(cfg));
   }
 
@@ -644,12 +831,15 @@
     var btn = $('btn-testar');
     btn.disabled = true;
     btn.textContent = 'Testando…';
-    var p = partes(estado.isoHoje);
-    window.PontoStorage.carregarMes(p.ano, p.mes).then(function () {
-      toast(nova.demo ? 'Modo demo funcionando.' : 'Conexão com o GitHub OK.', 'ok');
-      vibrar(60);
-    }).catch(function (err) {
-      toast(msgErro(err), 'erro');
+    // testarConexao nunca rejeita e devolve mensagem com o status HTTP
+    // quando falha (401/404/...), facilitando o diagnóstico no celular.
+    window.PontoStorage.testarConexao().then(function (r) {
+      if (r && r.ok) {
+        toast(r.mensagem || 'Conexão com o GitHub OK.', 'ok');
+        vibrar(60);
+      } else {
+        toast((r && r.mensagem) || 'Falha ao testar a conexão.', 'erro');
+      }
     }).then(function () {
       btn.disabled = false;
       btn.textContent = 'Testar conexão';
@@ -689,7 +879,19 @@
     }
 
     // Hoje
-    $('btn-bater').addEventListener('click', baterPonto);
+    $('btn-bater').addEventListener('click', function () { baterPonto(false); });
+    $('banner-pendentes').addEventListener('click', reenviarPendentes);
+
+    // Modal de intervalo curto (confirmação da 3ª batida antes de 1h)
+    $('btn-intervalo-fechar').addEventListener('click', fecharModalIntervalo);
+    $('btn-intervalo-voltar').addEventListener('click', fecharModalIntervalo);
+    $('btn-intervalo-confirmar').addEventListener('click', function () {
+      fecharModalIntervalo();
+      baterPonto(true);
+    });
+    $('modal-intervalo').addEventListener('click', function (ev) {
+      if (ev.target === this) fecharModalIntervalo();
+    });
 
     // Histórico
     $('btn-mes-ant').addEventListener('click', function () { mudarMes(-1); });
@@ -712,8 +914,20 @@
     // Config
     $('btn-salvar-config').addEventListener('click', salvarConfig);
     $('btn-testar').addEventListener('click', testarConexao);
+    $('cfg-lembrete').addEventListener('change', aoMudarLembrete);
 
     atualizarSelo();
+
+    // Service Worker mínimo: habilita showNotification e instalabilidade.
+    if ('serviceWorker' in navigator) {
+      try {
+        navigator.serviceWorker.register('sw.js?v=2').catch(function () { /* segue sem SW */ });
+      } catch (e) { /* ambiente sem suporte: segue sem SW */ }
+    }
+
+    // Lembrete de fim de intervalo: se o app foi reaberto no meio do
+    // intervalo, o carregarHoje() -> renderHoje() reagenda o setTimeout
+    // para o tempo restante até completar 1h.
 
     // Sincronização de pendências offline: ao abrir e quando a rede voltar.
     sincronizarPendencias();
