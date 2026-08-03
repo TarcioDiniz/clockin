@@ -104,8 +104,22 @@
     baseModo: 'auto',         // 'auto' = dias úteis do mês x jornada diária | 'fixo'
     baseHoras: 200,           // horas-base quando baseModo === 'fixo'
     multiplicadorExtra: 1,    // 1 = hora extra pelo mesmo valor; 1.5 = +50%
-    descontarFalta: false     // descontar proporcionalmente as horas faltantes
+    descontarFalta: false,    // descontar proporcionalmente as horas faltantes
+    inicio: ''                // 'AAAA-MM-DD' — 1º dia do contrato ('' = sem limite)
   };
+
+  var RE_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+  // Normaliza a data de início: só aceita AAAA-MM-DD que exista de verdade.
+  function dataContrato(v) {
+    if (typeof v !== 'string' || !RE_ISO.test(v)) return '';
+    var p = v.split('-');
+    var a = +p[0], m = +p[1], d = +p[2];
+    if (m < 1 || m > 12 || d < 1 || d > 31) return '';
+    var dt = new Date(Date.UTC(a, m - 1, d));
+    if (dt.getUTCFullYear() !== a || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return '';
+    return v;
+  }
 
   function num(v, padrao) {
     var n = typeof v === 'string' ? parseFloat(String(v).replace(',', '.')) : v;
@@ -129,7 +143,8 @@
       baseModo: c.baseModo === 'fixo' ? 'fixo' : 'auto',
       baseHoras: baseH,
       multiplicadorExtra: mult,
-      descontarFalta: !!c.descontarFalta
+      descontarFalta: !!c.descontarFalta,
+      inicio: dataContrato(c.inicio)
     };
   }
 
@@ -155,21 +170,44 @@
   }
 
   // Dias úteis (seg-sex) do mês inteiro, independente de "hoje".
-  function diasUteisNoMes(ano, mes) {
-    var n = diasNoMes(ano, mes), c = 0;
-    for (var d = 1; d <= n; d++) {
+  // Com inicioISO, conta só os dias úteis a partir do 1º dia do contrato —
+  // é o que faz o mês de entrada ter meta proporcional.
+  function diasUteisNoMes(ano, mes, inicioISO) {
+    var ini = dataContrato(inicioISO);
+    var n = diasNoMes(ano, mes), c = 0, min = 1;
+    if (ini) {
+      var p = ini.split('-'), ia = +p[0], im = +p[1];
+      if (ano < ia || (ano === ia && mes < im)) return 0;   // mês antes do contrato
+      if (ano === ia && mes === im) min = +p[2];
+    }
+    for (var d = min; d <= n; d++) {
       var dow = new Date(Date.UTC(ano, mes - 1, d)).getUTCDay();
       if (dow >= 1 && dow <= 5) c++;
     }
     return c;
   }
 
+  // true quando o mês inteiro é anterior ao início do contrato.
+  function mesForaDoContrato(ano, mes, contrato) {
+    var c = normalizarContrato(contrato || contratoAtivo);
+    if (!c.inicio) return false;
+    var p = c.inicio.split('-');
+    return ano < +p[0] || (ano === +p[0] && mes < +p[1]);
+  }
+
   // Horas-base do MÊS FECHADO em minutos (não encolhe no meio do mês —
-  // é a referência contratual, não o quanto já venceu).
+  // é a referência contratual, não o quanto já venceu). No mês em que o
+  // contrato começa, a base é proporcional aos dias úteis contratados.
   function baseMesMin(ano, mes, contrato) {
     var c = normalizarContrato(contrato || contratoAtivo);
-    if (c.baseModo === 'fixo') return Math.round(c.baseHoras * 60);
-    return diasUteisNoMes(ano, mes) * metaDiaMin(c);
+    if (mesForaDoContrato(ano, mes, c)) return 0;
+    var uteis = diasUteisNoMes(ano, mes, c.inicio);
+    if (c.baseModo === 'fixo') {
+      var cheio = diasUteisNoMes(ano, mes);
+      if (cheio <= 0 || uteis >= cheio) return Math.round(c.baseHoras * 60);
+      return Math.round(c.baseHoras * 60 * uteis / cheio);  // mês de entrada
+    }
+    return uteis * metaDiaMin(c);
   }
 
   /**
@@ -238,8 +276,10 @@
 
     // Meta: metaDia em dia útil; sáb/dom e tipos ESPECIAIS do contrato = 0.
     // Tipo desconhecido NÃO zera a meta (mesma whitelist do gerador Node).
+    // Antes do 1º dia do contrato não existe meta (não gera saldo devedor).
     var especial = TIPOS_ESPECIAIS.indexOf(tipo) !== -1;
-    var metaMin = (!especial && ehDiaUtil(dataISO)) ? metaDia : 0;
+    var antesDoContrato = !!(contratoAtivo.inicio && dataISO < contratoAtivo.inicio);
+    var metaMin = (!especial && !antesDoContrato && ehDiaUtil(dataISO)) ? metaDia : 0;
 
     // Número ímpar de batidas: período em aberto. Em dia fechado a última
     // batida sem par é ignorada no total e o dia é sinalizado inconsistente.
@@ -375,6 +415,7 @@
     getContrato: getContrato,
     metaDiaMin: metaDiaMin,
     diasUteisNoMes: diasUteisNoMes,
+    mesForaDoContrato: mesForaDoContrato,
     baseMesMin: baseMesMin,
     calcularValores: calcularValores,
     fmtBRL: fmtBRL,
@@ -567,6 +608,9 @@
 
   function linhasAnual(meses) {
     return (meses || []).map(function (m) {
+      if (m.foraContrato) {
+        return [nomeMesPt(m.mes), '—', '—', '—', '—', 'fora do contrato'];
+      }
       if (!m.temDados) {
         return [nomeMesPt(m.mes), '—', fmtMin(m.baseMin), '—', '—', 'sem registros'];
       }

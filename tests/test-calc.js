@@ -358,6 +358,83 @@ teste('meta diária explícita tem precedência sobre o contrato ativo', () => {
   assert.strictEqual(r.saldoMin, 0);
 });
 
+/* ---------------- data de início do contrato ---------------- */
+
+teste('normalizarContrato só aceita data de início AAAA-MM-DD válida', () => {
+  assert.strictEqual(Calc.normalizarContrato({ inicio: '2026-07-06' }).inicio, '2026-07-06');
+  assert.strictEqual(Calc.normalizarContrato({ inicio: '06/07/2026' }).inicio, '');
+  assert.strictEqual(Calc.normalizarContrato({ inicio: '2026-02-30' }).inicio, '');
+  assert.strictEqual(Calc.normalizarContrato({ inicio: '2026-13-01' }).inicio, '');
+  assert.strictEqual(Calc.normalizarContrato({}).inicio, '');
+});
+
+teste('diasUteisNoMes conta só a partir do 1º dia do contrato', () => {
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 7), 23);
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 7, '2026-07-06'), 20);
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 6, '2026-07-06'), 0);   // mês anterior
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 8, '2026-07-06'), 21);  // mês posterior: cheio
+});
+
+teste('mesForaDoContrato marca só os meses anteriores ao início', () => {
+  const c = { inicio: '2026-07-06' };
+  assert.strictEqual(Calc.mesForaDoContrato(2026, 6, c), true);
+  assert.strictEqual(Calc.mesForaDoContrato(2025, 12, c), true);
+  assert.strictEqual(Calc.mesForaDoContrato(2026, 7, c), false);
+  assert.strictEqual(Calc.mesForaDoContrato(2026, 8, c), false);
+  assert.strictEqual(Calc.mesForaDoContrato(2026, 6, {}), false);      // sem início
+});
+
+teste('baseMesMin fica proporcional no mês de entrada e zero antes dele', () => {
+  const c = { valorMensal: 4500, jornadaSemanalH: 40, inicio: '2026-07-06' };
+  assert.strictEqual(Calc.baseMesMin(2026, 7, c), 20 * 480);  // 160:00
+  assert.strictEqual(Calc.baseMesMin(2026, 6, c), 0);
+  assert.strictEqual(Calc.baseMesMin(2026, 8, c), 21 * 480);
+});
+
+teste('baseMesMin no modo fixo rateia o mês de entrada pelos dias úteis', () => {
+  const c = { baseModo: 'fixo', baseHoras: 200, inicio: '2026-07-06' };
+  assert.strictEqual(Calc.baseMesMin(2026, 7, c), Math.round(200 * 60 * 20 / 23));
+  assert.strictEqual(Calc.baseMesMin(2026, 8, c), 200 * 60);  // mês cheio
+  assert.strictEqual(Calc.baseMesMin(2026, 6, c), 0);
+});
+
+teste('dias anteriores ao início do contrato não geram saldo devedor', () => {
+  const original = Calc.getContrato();
+  try {
+    Calc.setContrato({ valorMensal: 4500, jornadaSemanalH: 40, inicio: '2026-07-06' });
+    const antes = Calc.calcularDia({}, '2026-07-01');   // quarta-feira
+    assert.strictEqual(antes.metaMin, 0);
+    assert.strictEqual(antes.saldoMin, 0);
+    const depois = Calc.calcularDia({}, '2026-07-06');  // segunda-feira
+    assert.strictEqual(depois.metaMin, 480);
+    assert.strictEqual(depois.saldoMin, -480);
+    // O mês inteiro passa a valer 20 dias úteis, batendo com baseMesMin.
+    const res = Calc.resumoPeriodo({}, '2026-07-01', '2026-07-31', '2026-07-31');
+    assert.strictEqual(res.metaMin, 20 * 480);
+    assert.strictEqual(res.diasUteis, 20);
+    assert.strictEqual(res.metaMin, Calc.baseMesMin(2026, 7, Calc.getContrato()));
+  } finally {
+    Calc.setContrato(original);
+  }
+});
+
+teste('julho/2026 real: 170:47 contra meta proporcional de 160:00', () => {
+  const original = Calc.getContrato();
+  try {
+    const c = Calc.setContrato({ valorMensal: 4500, jornadaSemanalH: 40, inicio: '2026-07-06' });
+    const totalMin = 170 * 60 + 47;
+    const baseMin = Calc.baseMesMin(2026, 7, c);
+    assert.strictEqual(baseMin, 160 * 60);
+    const f = Calc.calcularValores(totalMin, baseMin, c);
+    assert.strictEqual(f.extraMin, 10 * 60 + 47);
+    assert.strictEqual(f.faltaMin, 0);
+    assert.strictEqual(Calc.fmtBRL(f.valorHora), 'R$ 28,13');
+    assert.strictEqual(Calc.fmtBRL(f.total), 'R$ 4.803,28');
+  } finally {
+    Calc.setContrato(original);
+  }
+});
+
 console.log('');
 console.log('Total: ' + (passaram + falharam) + ' | Passaram: ' + passaram + ' | Falharam: ' + falharam);
 if (falharam > 0) process.exit(1);

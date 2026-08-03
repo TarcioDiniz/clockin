@@ -193,6 +193,30 @@
   }
 
   /**
+   * Busca contrato.json no repositório. Serve para um aparelho NOVO herdar a
+   * meta e os valores sem o usuário reconfigurar tudo na mão.
+   * Best effort: qualquer falha (offline, 404, modo local) devolve null.
+   * @returns {Promise<object|null>}
+   */
+  function baixarContrato() {
+    var cfg = getConfig();
+    if (modoLocal(cfg) || !cfg || !cfg.owner || !cfg.repo) return Promise.resolve(null);
+    var url = API_BASE + '/repos/' + encodeURIComponent(cfg.owner) + '/' +
+      encodeURIComponent(cfg.repo) + '/contents/contrato.json';
+    return fetch(url, { headers: cabecalhos(cfg) })
+      .then(function (resp) {
+        if (!resp.ok) return null;                     // 404 = nunca foi salvo
+        return resp.json().then(function (json) {
+          if (!json || !json.content) return null;
+          var obj = JSON.parse(base64ParaUtf8(json.content.replace(/\n/g, '')));
+          try { localStorage.setItem(CHAVE_CONTRATO, JSON.stringify(obj)); } catch (e) { /* ignora */ }
+          return obj;
+        });
+      })
+      .catch(function () { return null; });             // nunca derruba o app
+  }
+
+  /**
    * Grava o contrato localmente e tenta espelhar em contrato.json no
    * repositório — assim o relatório mensal automático (GitHub Actions) usa
    * exatamente os mesmos números. A gravação remota é BEST EFFORT: se falhar,
@@ -849,6 +873,7 @@
     setConfig: setConfig,
     getContrato: getContrato,
     setContrato: setContrato,
+    baixarContrato: baixarContrato,
     // Dados
     carregarMes: carregarMes,
     salvarDia: salvarDia,

@@ -134,6 +134,22 @@
     try { salvo = window.PontoStorage.getContrato(); } catch (e) { salvo = null; }
     return window.PontoCalc.setContrato(salvo || window.PontoCalc.CONTRATO_PADRAO);
   }
+
+  // Aparelho novo: se ainda não há contrato local, herda o contrato.json do
+  // repositório. Best effort e silencioso — nunca bloqueia a inicialização.
+  function herdarContratoRemoto() {
+    var jaTem = null;
+    try { jaTem = window.PontoStorage.getContrato(); } catch (e) { jaTem = null; }
+    if (jaTem || !window.PontoStorage.baixarContrato) return;
+    window.PontoStorage.baixarContrato().then(function (c) {
+      if (!c) return;
+      window.PontoCalc.setContrato(c);
+      estado.fin.carregado = false;
+      try { preencherContrato(); } catch (e) { /* Config ainda não montada */ }
+      renderHoje(estado.diaHoje);
+      toast('Contrato carregado do seu repositório.');
+    });
+  }
   function contratoAtual() { return window.PontoCalc.getContrato(); }
 
   function getNome() { try { return localStorage.getItem('ponto.nome') || ''; } catch (e) { return ''; } }
@@ -818,8 +834,13 @@
     }
 
     var ultimo = (ano === hoje.ano) ? hoje.mes : 12;
+    var c0 = contratoAtual();
     var pedidos = [];
-    for (var m = 1; m <= ultimo; m++) pedidos.push(carregarMesCache(ano, m));
+    for (var m = 1; m <= ultimo; m++) {
+      // Mês anterior ao início do contrato não precisa ir na rede.
+      pedidos.push(window.PontoCalc.mesForaDoContrato(ano, m, c0)
+        ? Promise.resolve({}) : carregarMesCache(ano, m));
+    }
 
     $('fin-carregando').classList.remove('oculto');
     $('fin-lista').innerHTML = '';
@@ -853,10 +874,12 @@
     var totalMin = resumo.totalMin + (atual ? minutosEmAberto() : 0);
     var baseMin = C.baseMesMin(ano, mes, c);
     var f = C.calcularValores(totalMin, baseMin, c);
-    var temDados = mesTemDados(dias, ano, mes);
+    var fora = C.mesForaDoContrato(ano, mes, c);
+    var temDados = !fora && mesTemDados(dias, ano, mes);
 
     return {
       ano: ano, mes: mes, atual: atual, parcial: atual, temDados: temDados,
+      foraContrato: fora,
       diasTrabalhados: resumo.diasTrabalhados,
       totalMin: totalMin, baseMin: baseMin,
       extraMin: f.extraMin, faltaMin: f.faltaMin,
@@ -889,12 +912,13 @@
     var vazio = (t.meses === 0);
     $('btn-ano-pdf').disabled = vazio;
     $('btn-ano-excel').disabled = vazio;
-    $('card-grafico').classList.toggle('oculto', meses.length === 0);
+    $('card-grafico').classList.toggle('oculto', !meses.some(function (m) { return !m.foraContrato; }));
   }
 
   function renderGraficoFin(meses) {
     var C = window.PontoCalc;
     var el = $('fin-grafico');
+    meses = (meses || []).filter(function (m) { return !m.foraContrato; });
     if (!meses.length) { el.innerHTML = ''; return; }
 
     var teto = 1;
@@ -925,8 +949,10 @@
   function renderListaFin(meses) {
     var C = window.PontoCalc;
     var el = $('fin-lista');
+    var forasteiros = (meses || []).filter(function (m) { return m.foraContrato; }).length;
+    meses = (meses || []).filter(function (m) { return !m.foraContrato; });
     if (!meses.length) {
-      el.innerHTML = '<div class="vazio">Sem meses para mostrar neste ano.</div>';
+      el.innerHTML = '<div class="vazio">Sem meses de contrato neste ano.</div>';
       return;
     }
     var html = '';
@@ -934,7 +960,8 @@
       var m = meses[i];
       var saldo = m.totalMin - m.baseMin;
       var etiqueta = '';
-      if (m.atual) etiqueta = '<span class="etiqueta et-aberto">Em andamento</span>';
+      if (m.foraContrato) etiqueta = '<span class="etiqueta">Fora do contrato</span>';
+      else if (m.atual) etiqueta = '<span class="etiqueta et-aberto">Em andamento</span>';
       else if (!m.temDados) etiqueta = '<span class="etiqueta et-alerta">Sem registros</span>';
 
       html += '<button class="linha-mes' + (m.temDados ? '' : ' vazio-mes') +
@@ -950,6 +977,11 @@
             (m.temDados ? C.fmtSaldo(saldo) : '') + '</span>' +
         '</span>' +
       '</button>';
+    }
+    if (forasteiros) {
+      html += '<div class="vazio">' + forasteiros +
+        (forasteiros === 1 ? ' mês anterior' : ' meses anteriores') +
+        ' ao início do contrato ' + (forasteiros === 1 ? 'foi ocultado' : 'foram ocultados') + '.</div>';
     }
     el.innerHTML = html;
 
@@ -978,6 +1010,18 @@
     barra.classList.toggle('completa', m.totalMin >= m.baseMin && m.baseMin > 0);
 
     var c = m.contrato || contratoAtual();
+    if (m.foraContrato) {
+      // Mês anterior ao contrato: nada a cobrar, nada a comparar.
+      $('modal-mes-tabela').innerHTML =
+        '<tr><td>Situação</td><td>Fora do contrato</td></tr>' +
+        '<tr><td>Início do contrato</td><td>' + esc(C.formatarDataBR(c.inicio)) + '</td></tr>' +
+        '<tr><td>Total a cobrar</td><td>R$ 0,00</td></tr>';
+      $('modal-mes-obs').textContent =
+        'Mês anterior ao início do contrato — não gera meta nem valor.';
+      barra.style.width = '0%';
+      $('modal-mes').classList.remove('oculto');
+      return;
+    }
     var linhas = [
       ['Horas contratadas', C.fmtMin(m.baseMin) + ' (' + C.fmtHorasDec(m.baseMin) + ')'],
       ['Horas trabalhadas', C.fmtMin(m.totalMin) + ' (' + C.fmtHorasDec(m.totalMin) + ')'],
@@ -1004,7 +1048,8 @@
     $('modal-mes-tabela').innerHTML = html;
 
     var obs;
-    if (!m.temDados) obs = 'Nenhuma batida registrada neste mês — ele não entra no total do ano.';
+    if (m.foraContrato) obs = 'Mês anterior ao início do contrato — não gera meta nem valor.';
+    else if (!m.temDados) obs = 'Nenhuma batida registrada neste mês — ele não entra no total do ano.';
     else if (m.atual) obs = 'Mês em andamento: o valor muda conforme você bate o ponto.';
     else if (m.extraMin > 0) obs = C.fmtHorasDec(m.extraMin) + ' acima da meta = ' +
       C.fmtBRL(m.valorExtra) + ' de hora extra.';
@@ -1183,7 +1228,8 @@
     $('fin-tabela').innerHTML = html;
     $('fin-obs').textContent = 'Base: ' + (c.baseModo === 'fixo'
       ? c.baseHoras + ' h fixas por mês.'
-      : C.diasUteisNoMes(p.ano, p.mes) + ' dias úteis × ' + (c.jornadaSemanalH / 5) + ' h.') +
+      : C.diasUteisNoMes(p.ano, p.mes, c.inicio) + ' dias úteis × ' + (c.jornadaSemanalH / 5) + ' h.') +
+      (c.inicio ? ' Contrato a partir de ' + C.formatarDataBR(c.inicio) + '.' : '') +
       ' Ajuste em Config › Contrato e meta.';
     card.classList.remove('oculto');
   }
@@ -1231,6 +1277,7 @@
     $('cfg-base-horas').value = numBR(c.baseHoras);
     $('cfg-mult').value = numBR(c.multiplicadorExtra);
     $('cfg-descontar').checked = !!c.descontarFalta;
+    $('cfg-inicio').value = c.inicio || '';
     aoMudarBaseModo();
   }
 
@@ -1247,7 +1294,8 @@
       baseModo: $('cfg-base-modo').value,
       baseHoras: lerNumero('cfg-base-horas', 200),
       multiplicadorExtra: lerNumero('cfg-mult', 1),
-      descontarFalta: $('cfg-descontar').checked
+      descontarFalta: $('cfg-descontar').checked,
+      inicio: $('cfg-inicio').value
     });
   }
 
@@ -1259,10 +1307,13 @@
     var valorHora = baseMin > 0 ? c.valorMensal / (baseMin / 60) : 0;
     var txt = 'Em ' + nomeMes(p.ano, p.mes) + ': meta de <b>' + C.fmtMin(baseMin) + '</b>' +
       (c.baseModo === 'auto'
-        ? ' (' + C.diasUteisNoMes(p.ano, p.mes) + ' dias úteis × ' + numBR(c.jornadaSemanalH / 5) + ' h)'
+        ? ' (' + C.diasUteisNoMes(p.ano, p.mes, c.inicio) + ' dias úteis × ' + numBR(c.jornadaSemanalH / 5) + ' h)'
         : ' (fixas)') +
       ' por <b>' + C.fmtBRL(c.valorMensal) + '</b> — hora a <b>' + C.fmtBRL(valorHora) + '</b>' +
       (c.multiplicadorExtra !== 1 ? ' (extra ×' + numBR(c.multiplicadorExtra) + ')' : '') + '.';
+    if (c.inicio) {
+      txt += ' Contrato a partir de <b>' + C.formatarDataBR(c.inicio) + '</b>.';
+    }
     $('aviso-contrato-txt').innerHTML = txt;
   }
 
@@ -1365,6 +1416,7 @@
 
     // Contrato financeiro antes de qualquer cálculo (define a jornada diária).
     aplicarContrato();
+    herdarContratoRemoto();
 
     // Estado inicial de datas
     estado.isoHoje = hojeISO();
@@ -1436,6 +1488,7 @@
     $('btn-testar').addEventListener('click', testarConexao);
     $('cfg-lembrete').addEventListener('change', aoMudarLembrete);
     $('cfg-base-modo').addEventListener('change', aoMudarBaseModo);
+    $('cfg-inicio').addEventListener('change', atualizarAvisoContrato);
     ['cfg-valor', 'cfg-jornada', 'cfg-base-horas', 'cfg-mult'].forEach(function (id) {
       $(id).addEventListener('input', atualizarAvisoContrato);
     });
@@ -1446,7 +1499,7 @@
     // Service Worker mínimo: habilita showNotification e instalabilidade.
     if ('serviceWorker' in navigator) {
       try {
-        navigator.serviceWorker.register('sw.js?v=4').catch(function () { /* segue sem SW */ });
+        navigator.serviceWorker.register('sw.js?v=5').catch(function () { /* segue sem SW */ });
       } catch (e) { /* ambiente sem suporte: segue sem SW */ }
     }
 
