@@ -6,6 +6,8 @@
   'use strict';
 
   var TZ = 'America/Sao_Paulo';
+  // Versão exibida em Config. Subir junto com o ?v= do index.html e o CACHE do sw.js.
+  var APP_VERSAO = 'v6';
   // Regra do usuário: intervalo (almoço) mínimo de 1h. Apenas UI — o motor
   // de cálculo (PontoCalc) não é afetado.
   var INTERVALO_MINIMO_MIN = 60;
@@ -135,19 +137,61 @@
     return window.PontoCalc.setContrato(salvo || window.PontoCalc.CONTRATO_PADRAO);
   }
 
-  // Aparelho novo: se ainda não há contrato local, herda o contrato.json do
-  // repositório. Best effort e silencioso — nunca bloqueia a inicialização.
+  // Sincroniza o contrato com o contrato.json do repositório em dois casos:
+  //  1) aparelho novo, sem contrato local  -> adota o remoto inteiro;
+  //  2) contrato local antigo, sem o campo "inicio" (gravado por uma versão
+  //     anterior do app) -> mantém tudo o que já estava aqui e só aprende a
+  //     data de início. Best effort e silencioso: nunca bloqueia o início.
   function herdarContratoRemoto() {
-    var jaTem = null;
-    try { jaTem = window.PontoStorage.getContrato(); } catch (e) { jaTem = null; }
-    if (jaTem || !window.PontoStorage.baixarContrato) return;
-    window.PontoStorage.baixarContrato().then(function (c) {
-      if (!c) return;
-      window.PontoCalc.setContrato(c);
+    var local = null;
+    try { local = window.PontoStorage.getContrato(); } catch (e) { local = null; }
+    if (!window.PontoStorage.baixarContrato) return;
+    if (local && typeof local.inicio === 'string') return;   // já está em dia
+
+    window.PontoStorage.baixarContrato().then(function (remoto) {
+      if (!remoto) return;
+      var novo = remoto;
+      var msg = 'Contrato carregado do seu repositório.';
+
+      if (local) {
+        novo = {};
+        for (var k in local) {
+          if (Object.prototype.hasOwnProperty.call(local, k)) novo[k] = local[k];
+        }
+        novo.inicio = remoto.inicio || '';
+        if (!novo.inicio) return;                            // nada novo a aprender
+        msg = 'Início do contrato sincronizado: ' +
+          window.PontoCalc.formatarDataBR(novo.inicio) + '.';
+      }
+
+      try { window.PontoStorage.setContrato(novo); } catch (e) { /* segue em memória */ }
+      window.PontoCalc.setContrato(novo);
       estado.fin.carregado = false;
       try { preencherContrato(); } catch (e) { /* Config ainda não montada */ }
+      try { atualizarAvisoContrato(); } catch (e) { /* idem */ }
       renderHoje(estado.diaHoje);
-      toast('Contrato carregado do seu repositório.');
+      if (estado.aba === 'financeiro') { try { carregarFin(); } catch (e) { /* ignora */ } }
+      toast(msg);
+    });
+  }
+
+  // Limpa caches do Service Worker e recarrega do zero. Não toca em
+  // localStorage: registros, contrato e configurações continuam intactos.
+  function forcarAtualizacao() {
+    var passos = [];
+    if (window.caches && caches.keys) {
+      passos.push(caches.keys().then(function (chaves) {
+        return Promise.all(chaves.map(function (c) { return caches.delete(c); }));
+      }));
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      passos.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(regs.map(function (r) { return r.unregister(); }));
+      }));
+    }
+    Promise.all(passos).catch(function () { /* segue mesmo assim */ }).then(function () {
+      var base = location.href.split('#')[0].split('?')[0];
+      location.replace(base + '?atualizado=' + new Date().getTime());
     });
   }
   function contratoAtual() { return window.PontoCalc.getContrato(); }
@@ -1489,6 +1533,11 @@
     $('cfg-lembrete').addEventListener('change', aoMudarLembrete);
     $('cfg-base-modo').addEventListener('change', aoMudarBaseModo);
     $('cfg-inicio').addEventListener('change', atualizarAvisoContrato);
+    $('cfg-versao').textContent = APP_VERSAO;
+    $('btn-forcar-atualizacao').addEventListener('click', function () {
+      toast('Atualizando…');
+      forcarAtualizacao();
+    });
     ['cfg-valor', 'cfg-jornada', 'cfg-base-horas', 'cfg-mult'].forEach(function (id) {
       $(id).addEventListener('input', atualizarAvisoContrato);
     });
@@ -1499,7 +1548,7 @@
     // Service Worker mínimo: habilita showNotification e instalabilidade.
     if ('serviceWorker' in navigator) {
       try {
-        navigator.serviceWorker.register('sw.js?v=5').catch(function () { /* segue sem SW */ });
+        navigator.serviceWorker.register('sw.js?v=6').catch(function () { /* segue sem SW */ });
       } catch (e) { /* ambiente sem suporte: segue sem SW */ }
     }
 

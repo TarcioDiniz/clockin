@@ -6,7 +6,7 @@
  */
 'use strict';
 
-var CACHE = 'clockin-v5';
+var CACHE = 'clockin-v6';
 
 self.addEventListener('install', function () {
   self.skipWaiting();
@@ -32,8 +32,17 @@ self.addEventListener('fetch', function (evento) {
   // Nunca intercepta a API do GitHub: o app já tem fila offline própria.
   if (req.url.indexOf('api.github.com') !== -1) return;
 
+  // Navegação (abrir o app) e scripts próprios: força ida à rede ignorando o
+  // cache HTTP do Safari/GitHub Pages, senão o iPhone continua rodando a
+  // versão antiga mesmo com o SW novo instalado.
+  var semCacheHTTP = req.mode === 'navigate' ||
+    (req.url.indexOf(self.location.origin) === 0 && /\.(js|css|html)(\?|$)/.test(req.url));
+  var pedido = semCacheHTTP
+    ? new Request(req.url, { cache: 'reload', credentials: 'same-origin', mode: 'same-origin' })
+    : req;
+
   evento.respondWith(
-    fetch(req).then(function (resp) {
+    fetch(pedido).then(function (resp) {
       // Rede OK: atualiza o cache (só same-origin) e devolve a resposta fresca.
       if (resp && resp.ok && req.url.indexOf(self.location.origin) === 0) {
         var copia = resp.clone();
