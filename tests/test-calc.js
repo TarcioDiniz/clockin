@@ -248,6 +248,116 @@ teste('hojeISO devolve data ISO no formato AAAA-MM-DD', () => {
   assert.match(Calc.hojeISO(), /^\d{4}-\d{2}-\d{2}$/);
 });
 
+/* ==================================================================
+ * Contrato financeiro (meta do mês + quanto cobrar)
+ * 2026-07 tem 23 dias úteis (seg-sex) -> meta 23 x 480 = 11040 min = 184 h.
+ * ================================================================== */
+
+teste('diasUteisNoMes conta apenas seg-sex', () => {
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 7), 23);
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 2), 20); // fev/2026
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 8), 21);
+});
+
+teste('jornada semanal define a meta diária (40h -> 480 min)', () => {
+  assert.strictEqual(Calc.metaDiaMin({ jornadaSemanalH: 40 }), 480);
+  assert.strictEqual(Calc.metaDiaMin({ jornadaSemanalH: 44 }), 528);
+  assert.strictEqual(Calc.metaDiaMin({ jornadaSemanalH: 30 }), 360);
+});
+
+teste('baseMesMin: auto usa dias úteis x jornada diária; fixo usa baseHoras', () => {
+  const auto = { valorMensal: 4500, jornadaSemanalH: 40, baseModo: 'auto' };
+  assert.strictEqual(Calc.baseMesMin(2026, 7, auto), 23 * 480);
+  const fixo = { valorMensal: 4500, baseModo: 'fixo', baseHoras: 200 };
+  assert.strictEqual(Calc.baseMesMin(2026, 7, fixo), 200 * 60);
+});
+
+teste('valor da hora = valor mensal / horas-base do mês', () => {
+  const c = Calc.normalizarContrato({ valorMensal: 4500, jornadaSemanalH: 40, baseModo: 'auto' });
+  const base = Calc.baseMesMin(2026, 7, c); // 11040 min = 184 h
+  const f = Calc.calcularValores(base, base, c);
+  assert.strictEqual(Math.round(f.valorHora * 100) / 100, 24.46); // 4500/184
+  assert.strictEqual(f.extraMin, 0);
+  assert.strictEqual(f.faltaMin, 0);
+  assert.strictEqual(f.total, 4500); // bateu a meta exata: só o fixo
+});
+
+teste('hora extra: o que passa da meta soma ao valor fixo', () => {
+  const c = Calc.normalizarContrato({ valorMensal: 4500, jornadaSemanalH: 40, baseModo: 'auto' });
+  const base = Calc.baseMesMin(2026, 7, c);
+  const f = Calc.calcularValores(base + 600, base, c); // +10h
+  assert.strictEqual(f.extraMin, 600);
+  assert.strictEqual(f.faltaMin, 0);
+  assert.strictEqual(Math.round(f.valorExtra * 100) / 100, 244.57); // 10 x 24,4565…
+  assert.strictEqual(Math.round(f.total * 100) / 100, 4744.57);
+});
+
+teste('multiplicador de hora extra (1,5 = +50%)', () => {
+  const c = Calc.normalizarContrato({ valorMensal: 4500, baseModo: 'fixo', baseHoras: 180, multiplicadorExtra: 1.5 });
+  const f = Calc.calcularValores(180 * 60 + 600, 180 * 60, c); // hora = 25,00
+  assert.strictEqual(f.valorHora, 25);
+  assert.strictEqual(f.valorExtra, 10 * 25 * 1.5); // 375
+  assert.strictEqual(f.total, 4875);
+});
+
+teste('horas faltantes: sem desconto por padrão, com desconto se ligado', () => {
+  const semDesc = Calc.normalizarContrato({ valorMensal: 4500, baseModo: 'fixo', baseHoras: 180 });
+  const f1 = Calc.calcularValores(180 * 60 - 600, 180 * 60, semDesc);
+  assert.strictEqual(f1.faltaMin, 600);
+  assert.strictEqual(f1.desconto, 0);
+  assert.strictEqual(f1.total, 4500); // valor fechado é mantido
+
+  const comDesc = Calc.normalizarContrato({ valorMensal: 4500, baseModo: 'fixo', baseHoras: 180, descontarFalta: true });
+  const f2 = Calc.calcularValores(180 * 60 - 600, 180 * 60, comDesc);
+  assert.strictEqual(f2.desconto, 250); // 10h x 25
+  assert.strictEqual(f2.total, 4250);
+});
+
+teste('contrato inválido cai no padrão (nunca NaN, nunca divide por zero)', () => {
+  const c = Calc.normalizarContrato({ valorMensal: 'abc', jornadaSemanalH: 0, multiplicadorExtra: -3, baseHoras: 0 });
+  assert.strictEqual(c.valorMensal, 4500);
+  assert.strictEqual(c.jornadaSemanalH, 40);
+  assert.strictEqual(c.multiplicadorExtra, 1);
+  assert.strictEqual(c.baseHoras, 200);
+  const f = Calc.calcularValores(NaN, 0, c);
+  assert.strictEqual(f.valorHora, 0);
+  assert.strictEqual(f.total, 4500);
+  assert.ok(isFinite(f.progresso));
+});
+
+teste('valorMensal aceita string "4.500,00" via normalização do app', () => {
+  const c = Calc.normalizarContrato({ valorMensal: '5000,50' });
+  assert.strictEqual(c.valorMensal, 5000.5);
+});
+
+teste('fmtBRL formata em real com milhar e centavos', () => {
+  assert.strictEqual(Calc.fmtBRL(4500), 'R$ 4.500,00');
+  assert.strictEqual(Calc.fmtBRL(24.456521739), 'R$ 24,46');
+  assert.strictEqual(Calc.fmtBRL(0), 'R$ 0,00');
+  assert.strictEqual(Calc.fmtBRL(1234567.891), 'R$ 1.234.567,89');
+  assert.strictEqual(Calc.fmtBRL(NaN), 'R$ 0,00');
+});
+
+teste('setContrato muda a meta diária usada por calcularDia/resumoPeriodo', () => {
+  const original = Calc.getContrato();
+  try {
+    Calc.setContrato({ valorMensal: 4500, jornadaSemanalH: 30 }); // 6h/dia
+    const r = Calc.calcularDia({ batidas: ['09:00', '15:00'] }, '2026-07-22');
+    assert.strictEqual(r.metaMin, 360);
+    assert.strictEqual(r.saldoMin, 0);
+    const res = Calc.resumoPeriodo({}, '2026-07-20', '2026-07-24', '2026-07-31');
+    assert.strictEqual(res.metaMin, 5 * 360);
+  } finally {
+    Calc.setContrato(original); // não vaza estado para os outros testes
+  }
+});
+
+teste('meta diária explícita tem precedência sobre o contrato ativo', () => {
+  const r = Calc.calcularDia({ batidas: ['08:00', '12:00'] }, '2026-07-22', 240);
+  assert.strictEqual(r.metaMin, 240);
+  assert.strictEqual(r.saldoMin, 0);
+});
+
 console.log('');
 console.log('Total: ' + (passaram + falharam) + ' | Passaram: ' + passaram + ' | Falharam: ' + falharam);
 if (falharam > 0) process.exit(1);

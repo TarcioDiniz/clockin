@@ -115,9 +115,21 @@
     isoHoje: hojeISO(),
     diaHoje: null, // último dia renderizado na tela Hoje (p/ tempo em aberto)
     hist: { ano: 0, mes: 0, dias: null },
+    mesHoje: null, // mapa de dias do mês corrente (p/ o card "Meta do mês")
     rel: { resumo: null, inicioISO: null, fimISO: null },
     modal: { dataISO: null, diaOriginal: null }
   };
+
+  /* ---------------- contrato financeiro ---------------- */
+
+  // Lê o contrato salvo (ou o padrão) e o instala no motor de cálculo, para
+  // que KPIs e relatórios usem a MESMA jornada diária.
+  function aplicarContrato() {
+    var salvo = null;
+    try { salvo = window.PontoStorage.getContrato(); } catch (e) { salvo = null; }
+    return window.PontoCalc.setContrato(salvo || window.PontoCalc.CONTRATO_PADRAO);
+  }
+  function contratoAtual() { return window.PontoCalc.getContrato(); }
 
   function getNome() { try { return localStorage.getItem('ponto.nome') || ''; } catch (e) { return ''; } }
   function setNome(v) { try { localStorage.setItem('ponto.nome', v); } catch (e) { /* ignora */ } }
@@ -127,6 +139,10 @@
   }
   function configPronta(cfg) {
     return !!(cfg && (cfg.demo || (cfg.owner && cfg.repo && cfg.token)));
+  }
+  function modoDemo() {
+    var cfg = configAtual();
+    return !!(cfg && cfg.demo);
   }
 
   function atualizarSelo() {
@@ -273,6 +289,68 @@
     });
   }
 
+  /* ================================================================
+   * Card "Meta do mês" (aba Hoje)
+   * ================================================================ */
+
+  // Minutos do período ainda aberto de hoje (última batida ímpar -> agora).
+  function minutosEmAberto() {
+    var dia = estado.diaHoje;
+    if (!dia || !dia.batidas || dia.batidas.length % 2 === 0) return 0;
+    var ultima = hhmmMin(dia.batidas[dia.batidas.length - 1]);
+    var agora = hhmmMin(window.PontoStorage.horaAgoraHHMM());
+    if (ultima === null || agora === null || agora <= ultima) return 0;
+    return agora - ultima;
+  }
+
+  function renderMetaMes() {
+    var C = window.PontoCalc;
+    var c = contratoAtual();
+    var p = partes(estado.isoHoje);
+    var iniISO = montarISO(p.ano, p.mes, 1);
+    var fimISO = montarISO(p.ano, p.mes, diasNoMes(p.ano, p.mes));
+
+    var resumo = C.resumoPeriodo(estado.mesHoje || {}, iniISO, fimISO, estado.isoHoje);
+    var totalMin = resumo.totalMin + minutosEmAberto();
+    var baseMin = C.baseMesMin(p.ano, p.mes, c);
+    var f = C.calcularValores(totalMin, baseMin, c);
+
+    $('meta-mes-rotulo').textContent = '— ' + nomeMes(p.ano, p.mes);
+    $('meta-feito').textContent = C.fmtMin(totalMin);
+    $('meta-alvo').textContent = 'de ' + C.fmtMin(baseMin);
+
+    var pct = Math.round(f.progresso * 100);
+    $('meta-pct').textContent = pct + '%';
+    var barra = $('meta-barra');
+    barra.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    barra.classList.toggle('completa', totalMin >= baseMin && baseMin > 0);
+
+    var restante = $('meta-restante');
+    if (f.extraMin > 0) {
+      restante.textContent = '+' + C.fmtMin(f.extraMin) + ' extras';
+      restante.className = 'pos';
+    } else {
+      restante.textContent = C.fmtMin(f.faltaMin) + ' a fazer';
+      restante.className = 'neutro';
+    }
+
+    $('meta-valor-hora').textContent = C.fmtBRL(f.valorHora);
+    $('meta-total').textContent = C.fmtBRL(f.total);
+
+    var obs;
+    if (f.extraMin > 0) {
+      obs = 'Meta do mês batida. ' + C.fmtHorasDec(f.extraMin) + ' de extra = ' +
+        C.fmtBRL(f.valorExtra) + ' acima do valor fixo de ' + C.fmtBRL(f.valorBase) + '.';
+    } else if (f.desconto > 0) {
+      obs = 'Faltam ' + C.fmtHorasDec(f.faltaMin) + ' para a meta — desconto previsto de ' +
+        C.fmtBRL(f.desconto) + '.';
+    } else {
+      obs = 'Faltam ' + C.fmtHorasDec(f.faltaMin) + ' para fechar a meta do mês. ' +
+        'Só o que passar disso vira hora extra.';
+    }
+    $('meta-obs').textContent = obs;
+  }
+
   function renderHoje(dia) {
     var lista = $('lista-batidas-hoje');
     var vazio = $('hoje-vazio');
@@ -329,6 +407,7 @@
     renderIntervalo(dia);
     if (b.length === 2) agendarLembrete(dia); else cancelarLembrete();
     atualizarBannerPendentes();
+    renderMetaMes();
   }
 
   function carregarHoje() {
@@ -340,6 +419,8 @@
     var p = partes(estado.isoHoje);
     $('hoje-carregando').classList.remove('oculto');
     window.PontoStorage.carregarMes(p.ano, p.mes).then(function (res) {
+      // guarda o mês inteiro: o card "Meta do mês" precisa de todos os dias
+      estado.mesHoje = (res && res.dias) || {};
       renderHoje((res && res.dias && res.dias[estado.isoHoje]) || null);
     }).catch(function (err) {
       toast(msgErro(err), 'erro');
@@ -400,6 +481,9 @@
       } else {
         toast('Ponto registrado' + (ultima ? ' às ' + ultima : '') + '.', 'ok');
       }
+      // mantém o mês em memória coerente para o card "Meta do mês"
+      if (!estado.mesHoje) estado.mesHoje = {};
+      if (dia) estado.mesHoje[estado.isoHoje] = dia;
       renderHoje(dia); // agenda/cancela o lembrete e atualiza o banner
     }).catch(function (err) {
       vibrar(250);
@@ -700,6 +784,7 @@
     $('rel-erro').classList.add('oculto');
     $('rel-vazio').classList.add('oculto');
     $('rel-tabela-envolt').classList.add('oculto');
+    $('card-financeiro').classList.add('oculto');
     $('rel-carregando').classList.remove('oculto');
     $('btn-pdf').disabled = true;
     $('btn-excel').disabled = true;
@@ -715,6 +800,7 @@
       var resumo = window.PontoCalc.resumoPeriodo(dias, faixa.inicioISO, faixa.fimISO);
       estado.rel = { resumo: resumo, inicioISO: faixa.inicioISO, fimISO: faixa.fimISO, tipo: tipo };
       renderPrevia(resumo);
+      renderFinanceiro(tipo, resumo, faixa);
       $('btn-pdf').disabled = false;
       $('btn-excel').disabled = false;
     }).catch(function (err) {
@@ -752,9 +838,54 @@
     $('rel-tabela-envolt').classList.remove('oculto');
   }
 
+  /* Fechamento financeiro — só faz sentido no relatório MENSAL, que é o
+   * documento de cobrança. Semanal/diário mostram apenas horas. */
+  function renderFinanceiro(tipo, resumo, faixa) {
+    var C = window.PontoCalc;
+    var card = $('card-financeiro');
+    estado.rel.financeiro = null;
+
+    if (tipo !== 'mensal') { card.classList.add('oculto'); return; }
+
+    var p = partes(faixa.inicioISO);
+    var c = contratoAtual();
+    var baseMin = C.baseMesMin(p.ano, p.mes, c);
+    var f = C.calcularValores(resumo.totalMin, baseMin, c);
+    estado.rel.financeiro = f;
+
+    var linhas = [
+      ['Horas contratadas no mês', C.fmtMin(baseMin) + ' (' + C.fmtHorasDec(baseMin) + ')'],
+      ['Horas trabalhadas', C.fmtMin(resumo.totalMin) + ' (' + C.fmtHorasDec(resumo.totalMin) + ')'],
+      ['Valor da hora', C.fmtBRL(f.valorHora)],
+      ['Valor fixo do mês', C.fmtBRL(f.valorBase)]
+    ];
+    if (f.extraMin > 0) {
+      linhas.push([
+        'Horas extras' + (c.multiplicadorExtra !== 1 ? ' (×' + String(c.multiplicadorExtra).replace('.', ',') + ')' : ''),
+        C.fmtMin(f.extraMin) + ' = ' + C.fmtBRL(f.valorExtra)
+      ]);
+    } else if (f.faltaMin > 0) {
+      linhas.push(['Horas faltantes',
+        '-' + C.fmtMin(f.faltaMin) + (f.desconto > 0 ? ' = -' + C.fmtBRL(f.desconto) : ' (sem desconto)')]);
+    }
+    linhas.push(['Total a cobrar', C.fmtBRL(f.total)]);
+
+    var html = '';
+    for (var i = 0; i < linhas.length; i++) {
+      html += '<tr><td>' + esc(linhas[i][0]) + '</td><td>' + esc(linhas[i][1]) + '</td></tr>';
+    }
+    $('fin-tabela').innerHTML = html;
+    $('fin-obs').textContent = 'Base: ' + (c.baseModo === 'fixo'
+      ? c.baseHoras + ' h fixas por mês.'
+      : C.diasUteisNoMes(p.ano, p.mes) + ' dias úteis × ' + (c.jornadaSemanalH / 5) + ' h.') +
+      ' Ajuste em Config › Contrato e meta.';
+    card.classList.remove('oculto');
+  }
+
   function metaRelatorio() {
     return {
       nome: getNome() || 'Colaborador',
+      financeiro: estado.rel.financeiro || null,
       inicioISO: estado.rel.inicioISO,
       fimISO: estado.rel.fimISO,
       periodo: dataBR(estado.rel.inicioISO) +
@@ -776,8 +907,62 @@
   /* ================================================================
    * TELA CONFIG
    * ================================================================ */
+  // "4.500,00" / "4500" -> 4500
+  function lerNumero(id, padrao) {
+    var v = String($(id).value || '').trim().replace(/\./g, '').replace(',', '.');
+    var n = parseFloat(v);
+    return isFinite(n) ? n : padrao;
+  }
+  function numBR(n) {
+    return String(n).replace('.', ',');
+  }
+
+  function preencherContrato() {
+    var c = contratoAtual();
+    $('cfg-valor').value = numBR(c.valorMensal);
+    $('cfg-jornada').value = numBR(c.jornadaSemanalH);
+    $('cfg-base-modo').value = c.baseModo;
+    $('cfg-base-horas').value = numBR(c.baseHoras);
+    $('cfg-mult').value = numBR(c.multiplicadorExtra);
+    $('cfg-descontar').checked = !!c.descontarFalta;
+    aoMudarBaseModo();
+  }
+
+  function aoMudarBaseModo() {
+    $('campo-base-horas').classList.toggle('oculto', $('cfg-base-modo').value !== 'fixo');
+    atualizarAvisoContrato();
+  }
+
+  // Lê os campos SEM salvar — usado para a prévia da regra em Config.
+  function contratoDosCampos() {
+    return window.PontoCalc.normalizarContrato({
+      valorMensal: lerNumero('cfg-valor', 4500),
+      jornadaSemanalH: lerNumero('cfg-jornada', 40),
+      baseModo: $('cfg-base-modo').value,
+      baseHoras: lerNumero('cfg-base-horas', 200),
+      multiplicadorExtra: lerNumero('cfg-mult', 1),
+      descontarFalta: $('cfg-descontar').checked
+    });
+  }
+
+  function atualizarAvisoContrato() {
+    var C = window.PontoCalc;
+    var c = contratoDosCampos();
+    var p = partes(estado.isoHoje || hojeISO());
+    var baseMin = C.baseMesMin(p.ano, p.mes, c);
+    var valorHora = baseMin > 0 ? c.valorMensal / (baseMin / 60) : 0;
+    var txt = 'Em ' + nomeMes(p.ano, p.mes) + ': meta de <b>' + C.fmtMin(baseMin) + '</b>' +
+      (c.baseModo === 'auto'
+        ? ' (' + C.diasUteisNoMes(p.ano, p.mes) + ' dias úteis × ' + numBR(c.jornadaSemanalH / 5) + ' h)'
+        : ' (fixas)') +
+      ' por <b>' + C.fmtBRL(c.valorMensal) + '</b> — hora a <b>' + C.fmtBRL(valorHora) + '</b>' +
+      (c.multiplicadorExtra !== 1 ? ' (extra ×' + numBR(c.multiplicadorExtra) + ')' : '') + '.';
+    $('aviso-contrato-txt').innerHTML = txt;
+  }
+
   function preencherConfig() {
     var cfg = configAtual() || {};
+    preencherContrato();
     $('cfg-nome').value = getNome();
     $('cfg-owner').value = cfg.owner || 'TarcioDiniz';
     $('cfg-repo').value = cfg.repo || 'clockin-data';
@@ -801,6 +986,18 @@
       toast(msgErro(err), 'erro');
       return;
     }
+
+    // Contrato: salva local e espelha em contrato.json (best effort), para o
+    // relatório automático do GitHub Actions usar os mesmos números.
+    var contrato = contratoDosCampos();
+    window.PontoCalc.setContrato(contrato);
+    window.PontoStorage.setContrato(contrato).then(function (r) {
+      if (r && r.local && !r.remoto && !modoDemo()) {
+        toast('Meta salva no aparelho, mas não subiu ao GitHub: ' + (r.erro || 'falha de envio'), 'erro');
+      }
+    });
+    if (estado.aba === 'hoje' || estado.mesHoje) renderMetaMes();
+
     atualizarSelo();
     $('config-boasvindas').classList.toggle('oculto', configPronta(nova));
     if (configPronta(nova)) {
@@ -859,6 +1056,9 @@
       return;
     }
 
+    // Contrato financeiro antes de qualquer cálculo (define a jornada diária).
+    aplicarContrato();
+
     // Estado inicial de datas
     estado.isoHoje = hojeISO();
     var p = partes(estado.isoHoje);
@@ -915,13 +1115,18 @@
     $('btn-salvar-config').addEventListener('click', salvarConfig);
     $('btn-testar').addEventListener('click', testarConexao);
     $('cfg-lembrete').addEventListener('change', aoMudarLembrete);
+    $('cfg-base-modo').addEventListener('change', aoMudarBaseModo);
+    ['cfg-valor', 'cfg-jornada', 'cfg-base-horas', 'cfg-mult'].forEach(function (id) {
+      $(id).addEventListener('input', atualizarAvisoContrato);
+    });
+    $('cfg-descontar').addEventListener('change', atualizarAvisoContrato);
 
     atualizarSelo();
 
     // Service Worker mínimo: habilita showNotification e instalabilidade.
     if ('serviceWorker' in navigator) {
       try {
-        navigator.serviceWorker.register('sw.js?v=2').catch(function () { /* segue sem SW */ });
+        navigator.serviceWorker.register('sw.js?v=3').catch(function () { /* segue sem SW */ });
       } catch (e) { /* ambiente sem suporte: segue sem SW */ }
     }
 

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1e3a8a">
 <meta name="description" content="Ponto — controle de jornada 100% no navegador, com armazenamento no seu GitHub.">
-<link rel="manifest" href="manifest.json?v=2">
-<link rel="apple-touch-icon" href="icon-192.png?v=2">
+<link rel="manifest" href="manifest.json?v=3">
+<link rel="apple-touch-icon" href="icon-192.png?v=3">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="clockin">
@@ -161,6 +161,26 @@
   .et-tipo{background:var(--azul-100);color:var(--azul-700)}
   .et-alerta{background:var(--ambar-claro);color:var(--ambar)}
   .et-aberto{background:var(--verde-claro);color:var(--verde)}
+
+  /* ---------- Meta do mês / financeiro ---------- */
+  #card-meta-mes .meta-topo{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
+  #card-meta-mes .meta-horas b{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--cinza-900)}
+  #card-meta-mes .meta-horas span{font-size:14px;color:var(--cinza-600)}
+  #card-meta-mes .meta-pct{font-size:15px;font-weight:800;color:var(--cinza-600);font-variant-numeric:tabular-nums}
+  .barra{height:10px;border-radius:999px;background:#e7ebf1;overflow:hidden}
+  .barra-preench{height:100%;border-radius:999px;background:linear-gradient(90deg,#2f6fd0,#3d97e8);transition:width .35s ease}
+  .barra-preench.completa{background:linear-gradient(90deg,#16a34a,#22c55e)}
+  #card-meta-mes .meta-grade{display:flex;gap:10px;margin-top:12px}
+  #card-meta-mes .meta-grade>div{flex:1;background:#f4f6f9;border-radius:10px;padding:8px 10px}
+  #card-meta-mes .meta-grade span{display:block;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--cinza-400);margin-bottom:2px}
+  #card-meta-mes .meta-grade b{font-size:15px;font-variant-numeric:tabular-nums;color:var(--cinza-900)}
+  #card-meta-mes .meta-total{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px 14px;border-radius:12px;background:var(--verde-claro,#e8f7ee);border:1px solid #bfe6cd}
+  #card-meta-mes .meta-total span{font-size:12.5px;text-transform:uppercase;letter-spacing:.5px;font-weight:700;color:#166b3f}
+  #card-meta-mes .meta-total b{font-size:22px;font-weight:800;color:#0f5c34;font-variant-numeric:tabular-nums}
+  table.fin{width:100%;border-collapse:collapse;font-size:14.5px}
+  table.fin td{padding:9px 4px;border-bottom:1px solid #eceff3}
+  table.fin td:last-child{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  table.fin tr:last-child td{border-bottom:none;font-weight:800;font-size:17px;color:#0f5c34;padding-top:12px}
 
   /* ---------- Relatórios ---------- */
   .campo{margin-bottom:12px}
@@ -320,6 +340,24 @@
       </div>
     </div>
 
+    <div class="cartao" id="card-meta-mes">
+      <div class="titulo-secao">Meta do mês <span id="meta-mes-rotulo" style="text-transform:none;font-weight:600;color:var(--cinza-400)"></span></div>
+      <div class="meta-topo">
+        <div class="meta-horas"><b id="meta-feito">00:00</b> <span id="meta-alvo">de 00:00</span></div>
+        <div class="meta-pct" id="meta-pct">0%</div>
+      </div>
+      <div class="barra"><div class="barra-preench" id="meta-barra" style="width:0%"></div></div>
+      <div class="meta-grade">
+        <div><span>Faltam / extras</span><b id="meta-restante">—</b></div>
+        <div><span>Valor da hora</span><b id="meta-valor-hora">—</b></div>
+      </div>
+      <div class="meta-total">
+        <span>A cobrar no fechamento</span>
+        <b id="meta-total">R$ 0,00</b>
+      </div>
+      <div class="dica" id="meta-obs" style="margin-top:6px"></div>
+    </div>
+
     <div class="cartao oculto" id="card-intervalo" aria-live="polite">
       <div class="int-titulo" id="int-titulo">Intervalo em andamento</div>
       <div class="int-tempo" id="int-tempo">—</div>
@@ -395,6 +433,12 @@
       </div>
       <div id="rel-vazio" class="vazio oculto">Sem dados no período selecionado.</div>
     </div>
+
+    <div class="cartao oculto" id="card-financeiro">
+      <div class="titulo-secao">Fechamento financeiro</div>
+      <table class="fin" id="fin-tabela"></table>
+      <div class="dica" id="fin-obs" style="margin-top:8px"></div>
+    </div>
   </section>
 
   <!-- ============ TELA CONFIG ============ -->
@@ -409,6 +453,49 @@
         <label for="cfg-nome">Nome completo</label>
         <input type="text" id="cfg-nome" placeholder="Ex.: Maria da Silva" autocomplete="name">
         <div class="dica">Aparece no cabeçalho dos relatórios PDF e Excel.</div>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Contrato e meta</div>
+      <div class="linha-campos">
+        <div class="campo">
+          <label for="cfg-valor">Valor fechado no mês (R$)</label>
+          <input type="text" id="cfg-valor" inputmode="decimal" placeholder="4500">
+        </div>
+        <div class="campo">
+          <label for="cfg-jornada">Jornada semanal (h)</label>
+          <input type="text" id="cfg-jornada" inputmode="decimal" placeholder="40">
+        </div>
+      </div>
+      <div class="campo">
+        <label for="cfg-base-modo">Horas-base para o valor da hora</label>
+        <select id="cfg-base-modo">
+          <option value="auto">Automático — dias úteis do mês × jornada diária</option>
+          <option value="fixo">Fixo — sempre a mesma quantidade de horas</option>
+        </select>
+      </div>
+      <div class="campo oculto" id="campo-base-horas">
+        <label for="cfg-base-horas">Horas-base fixas por mês</label>
+        <input type="text" id="cfg-base-horas" inputmode="decimal" placeholder="200">
+      </div>
+      <div class="campo">
+        <label for="cfg-mult">Multiplicador da hora extra</label>
+        <input type="text" id="cfg-mult" inputmode="decimal" placeholder="1">
+        <div class="dica">1 = hora extra pelo mesmo valor da hora normal. 1,5 = +50%.</div>
+      </div>
+      <div class="alterna">
+        <div class="txt">
+          <b>Descontar horas faltantes</b>
+          <span>Se desligado, o valor fixo do mês é mantido mesmo faltando horas.</span>
+        </div>
+        <label class="chave">
+          <input type="checkbox" id="cfg-descontar">
+          <span class="trilho"></span>
+        </label>
+      </div>
+      <div class="aviso aviso-azul" id="aviso-contrato" style="margin-top:10px">
+        <span id="aviso-contrato-txt">—</span>
       </div>
     </div>
 
@@ -545,9 +632,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-<!-- Módulos do app (ordem obrigatória; ?v=2 evita JS antigo do GitHub Pages) -->
-<script src="js/storage.js?v=2"></script>
-<script src="js/reports.js?v=2"></script>
-<script src="js/app.js?v=2"></script>
+<!-- Módulos do app (ordem obrigatória; ?v=3 evita JS antigo do GitHub Pages) -->
+<script src="js/storage.js?v=3"></script>
+<script src="js/reports.js?v=3"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>

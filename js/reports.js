@@ -87,20 +87,159 @@
     return pad2(p.dia) + '/' + pad2(p.mes) + '/' + p.ano;
   }
 
+  /* ---------------- contrato financeiro (meta + valores) ----------------
+   * Regra combinada:
+   *   - Jornada 40h/semana => 8h por dia útil (seg-sex).
+   *   - Meta do mês (modo "auto") = dias úteis do mês x jornada diária.
+   *   - Valor/hora = valor mensal / horas-base do mês.
+   *   - O que passar da meta do mês é EXTRA, pago a valor/hora x multiplicador.
+   *   - Faltando horas: por padrão o valor mensal é mantido e a falta só é
+   *     sinalizada (descontarFalta = true muda isso).
+   * O MESMO contrato está em scripts/gerar-relatorio.js (contrato.json).
+   * -------------------------------------------------------------------- */
+
+  var CONTRATO_PADRAO = {
+    valorMensal: 4500,        // R$ fechados no mês
+    jornadaSemanalH: 40,      // horas por semana (5 dias úteis)
+    baseModo: 'auto',         // 'auto' = dias úteis do mês x jornada diária | 'fixo'
+    baseHoras: 200,           // horas-base quando baseModo === 'fixo'
+    multiplicadorExtra: 1,    // 1 = hora extra pelo mesmo valor; 1.5 = +50%
+    descontarFalta: false     // descontar proporcionalmente as horas faltantes
+  };
+
+  function num(v, padrao) {
+    var n = typeof v === 'string' ? parseFloat(String(v).replace(',', '.')) : v;
+    return (typeof n === 'number' && isFinite(n)) ? n : padrao;
+  }
+
+  // Sempre devolve um contrato completo e sensato (nunca NaN, nunca zero divisor).
+  function normalizarContrato(c) {
+    c = c || {};
+    var jornada = num(c.jornadaSemanalH, CONTRATO_PADRAO.jornadaSemanalH);
+    if (jornada <= 0 || jornada > 84) jornada = CONTRATO_PADRAO.jornadaSemanalH;
+    var mult = num(c.multiplicadorExtra, CONTRATO_PADRAO.multiplicadorExtra);
+    if (mult <= 0 || mult > 5) mult = CONTRATO_PADRAO.multiplicadorExtra;
+    var baseH = num(c.baseHoras, CONTRATO_PADRAO.baseHoras);
+    if (baseH <= 0 || baseH > 744) baseH = CONTRATO_PADRAO.baseHoras;
+    var valor = num(c.valorMensal, CONTRATO_PADRAO.valorMensal);
+    if (valor < 0) valor = 0;
+    return {
+      valorMensal: valor,
+      jornadaSemanalH: jornada,
+      baseModo: c.baseModo === 'fixo' ? 'fixo' : 'auto',
+      baseHoras: baseH,
+      multiplicadorExtra: mult,
+      descontarFalta: !!c.descontarFalta
+    };
+  }
+
+  // Contrato "ativo" do app (definido pela tela Config). Mantém as duas
+  // pontas — KPIs da tela Hoje e relatórios — usando a MESMA jornada diária.
+  var contratoAtivo = normalizarContrato(CONTRATO_PADRAO);
+
+  function setContrato(c) {
+    contratoAtivo = normalizarContrato(c);
+    return contratoAtivo;
+  }
+  function getContrato() {
+    return normalizarContrato(contratoAtivo);
+  }
+
+  // Jornada diária em minutos: 40h/semana / 5 dias úteis = 480 min.
+  function metaDiaMin(contrato) {
+    return Math.round(normalizarContrato(contrato || contratoAtivo).jornadaSemanalH * 60 / 5);
+  }
+
+  function diasNoMes(ano, mes) {
+    return new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  }
+
+  // Dias úteis (seg-sex) do mês inteiro, independente de "hoje".
+  function diasUteisNoMes(ano, mes) {
+    var n = diasNoMes(ano, mes), c = 0;
+    for (var d = 1; d <= n; d++) {
+      var dow = new Date(Date.UTC(ano, mes - 1, d)).getUTCDay();
+      if (dow >= 1 && dow <= 5) c++;
+    }
+    return c;
+  }
+
+  // Horas-base do MÊS FECHADO em minutos (não encolhe no meio do mês —
+  // é a referência contratual, não o quanto já venceu).
+  function baseMesMin(ano, mes, contrato) {
+    var c = normalizarContrato(contrato || contratoAtivo);
+    if (c.baseModo === 'fixo') return Math.round(c.baseHoras * 60);
+    return diasUteisNoMes(ano, mes) * metaDiaMin(c);
+  }
+
+  /**
+   * Fechamento financeiro do mês.
+   * @param {number} totalMin  minutos efetivamente trabalhados no mês
+   * @param {number} baseMin   horas-base do mês em minutos (ver baseMesMin)
+   * @param {object} contrato
+   */
+  function calcularValores(totalMin, baseMin, contrato) {
+    var c = normalizarContrato(contrato || contratoAtivo);
+    totalMin = num(totalMin, 0);
+    baseMin = num(baseMin, 0);
+
+    var valorHora = baseMin > 0 ? (c.valorMensal / (baseMin / 60)) : 0;
+    var extraMin = Math.max(0, totalMin - baseMin);
+    var faltaMin = Math.max(0, baseMin - totalMin);
+    var valorExtra = (extraMin / 60) * valorHora * c.multiplicadorExtra;
+    var desconto = c.descontarFalta ? (faltaMin / 60) * valorHora : 0;
+    var total = c.valorMensal + valorExtra - desconto;
+    if (total < 0) total = 0;
+
+    return {
+      contrato: c,
+      baseMin: baseMin,
+      totalMin: totalMin,
+      valorHora: valorHora,
+      extraMin: extraMin,
+      faltaMin: faltaMin,
+      valorBase: c.valorMensal,
+      valorExtra: valorExtra,
+      desconto: desconto,
+      total: total,
+      progresso: baseMin > 0 ? (totalMin / baseMin) : 0
+    };
+  }
+
+  // 4500 -> "R$ 4.500,00"
+  function fmtBRL(v) {
+    if (typeof v !== 'number' || !isFinite(v)) v = 0;
+    var neg = v < 0;
+    var s = Math.abs(v).toFixed(2);
+    var partes = s.split('.');
+    partes[0] = partes[0].replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return (neg ? '-' : '') + 'R$ ' + partes[0] + ',' + partes[1];
+  }
+
+  // 486 -> "8,10 h" (horas decimais, útil para conferir com quem paga)
+  function fmtHorasDec(min) {
+    if (typeof min !== 'number' || !isFinite(min)) min = 0;
+    return (min / 60).toFixed(2).replace('.', ',') + ' h';
+  }
+
   /* ---------------- PontoCalc (API pública, funções puras) ---------------- */
 
   // dia: {batidas:[], obs:"", tipo:"normal|feriado|ferias|atestado|abono"} | null/undefined
   // dataISO: "AAAA-MM-DD"
   // -> {totalMin, metaMin, saldoMin, periodos, aberto, inconsistente}
-  function calcularDia(dia, dataISO) {
+  function calcularDia(dia, dataISO, metaDiaMinOpt) {
     dia = dia || {};
     var batidas = Array.isArray(dia.batidas) ? dia.batidas : [];
     var tipo = dia.tipo || 'normal';
 
-    // Meta: 480 min em dia útil; sáb/dom e tipos ESPECIAIS do contrato = 0.
+    // Meta do dia útil: 480 min por padrão (40h/5). Vem do contrato ativo,
+    // ou do parâmetro explícito (usado pelos testes).
+    var metaDia = num(metaDiaMinOpt, metaDiaMin(contratoAtivo));
+
+    // Meta: metaDia em dia útil; sáb/dom e tipos ESPECIAIS do contrato = 0.
     // Tipo desconhecido NÃO zera a meta (mesma whitelist do gerador Node).
     var especial = TIPOS_ESPECIAIS.indexOf(tipo) !== -1;
-    var metaMin = (!especial && ehDiaUtil(dataISO)) ? META_DIA_UTIL_MIN : 0;
+    var metaMin = (!especial && ehDiaUtil(dataISO)) ? metaDia : 0;
 
     // Número ímpar de batidas: período em aberto. Em dia fechado a última
     // batida sem par é ignorada no total e o dia é sinalizado inconsistente.
@@ -141,9 +280,10 @@
   // Inclui TODOS os dias do intervalo (mesmo vazios, com meta). Dias futuros
   // (após "hoje" em America/Sao_Paulo) não contam meta nem dia útil.
   // hojeRefISO é opcional (injeção para testes); default = hoje em SP.
-  function resumoPeriodo(diasMap, dataInicioISO, dataFimISO, hojeRefISO) {
+  function resumoPeriodo(diasMap, dataInicioISO, dataFimISO, hojeRefISO, metaDiaMinOpt) {
     diasMap = diasMap || {};
     var hoje = hojeRefISO || hojeISO();
+    var metaDia = num(metaDiaMinOpt, metaDiaMin(contratoAtivo));
 
     var porDia = [];
     var totalMin = 0, metaMin = 0, diasTrabalhados = 0, diasUteis = 0;
@@ -151,7 +291,7 @@
     for (var d = dataInicioISO; d <= dataFimISO; d = addDiasISO(d, 1)) {
       var futuro = d > hoje;
       var dia = diasMap[d];
-      var calc = calcularDia(dia, d);
+      var calc = calcularDia(dia, d, metaDia);
 
       if (futuro) {
         // Dia futuro: meta não conta (não gera saldo devedor antecipado).
@@ -227,7 +367,18 @@
     ehDiaUtil: ehDiaUtil,
     formatarDataBR: formatarDataBR,
     NOMES_DIA_SEMANA: NOMES_DIA_SEMANA,
-    META_DIA_UTIL_MIN: META_DIA_UTIL_MIN
+    META_DIA_UTIL_MIN: META_DIA_UTIL_MIN,
+    // contrato financeiro
+    CONTRATO_PADRAO: CONTRATO_PADRAO,
+    normalizarContrato: normalizarContrato,
+    setContrato: setContrato,
+    getContrato: getContrato,
+    metaDiaMin: metaDiaMin,
+    diasUteisNoMes: diasUteisNoMes,
+    baseMesMin: baseMesMin,
+    calcularValores: calcularValores,
+    fmtBRL: fmtBRL,
+    fmtHorasDec: fmtHorasDec
   };
 
   /* ---------------- PontoRelatorios (PDF / Excel) ---------------- */
@@ -273,6 +424,27 @@
     ];
   }
 
+  // Bloco "Fechamento financeiro" — mesmas linhas no PDF e no Excel.
+  function linhasFinanceiro(f) {
+    var c = f.contrato || {};
+    var linhas = [
+      ['Horas contratadas no mês', fmtMin(f.baseMin) + '  (' + fmtHorasDec(f.baseMin) + ')'],
+      ['Horas trabalhadas', fmtMin(f.totalMin) + '  (' + fmtHorasDec(f.totalMin) + ')'],
+      ['Valor da hora', fmtBRL(f.valorHora)],
+      ['Valor fixo do mês', fmtBRL(f.valorBase)]
+    ];
+    if (f.extraMin > 0) {
+      var rotulo = 'Horas extras' + (c.multiplicadorExtra && c.multiplicadorExtra !== 1
+        ? ' (x' + String(c.multiplicadorExtra).replace('.', ',') + ')' : '');
+      linhas.push([rotulo, fmtMin(f.extraMin) + '  =  ' + fmtBRL(f.valorExtra)]);
+    } else if (f.faltaMin > 0) {
+      linhas.push(['Horas faltantes', '-' + fmtMin(f.faltaMin) +
+        (f.desconto > 0 ? '  =  -' + fmtBRL(f.desconto) : '  (sem desconto)')]);
+    }
+    linhas.push(['TOTAL A COBRAR', fmtBRL(f.total)]);
+    return linhas;
+  }
+
   function nomeArquivo(tipo, resumo, ext) {
     return 'ponto-' + tipo + '-' + resumo.dataInicioISO + '_' + resumo.dataFimISO + '.' + ext;
   }
@@ -307,6 +479,29 @@
     });
 
     var fimY = (doc.lastAutoTable && doc.lastAutoTable.finalY) || 60;
+
+    if (meta.financeiro) {
+      doc.setFontSize(13);
+      doc.text('Fechamento financeiro', 14, fimY + 12);
+      doc.autoTable({
+        startY: fimY + 16,
+        head: [['Item', 'Valor']],
+        body: linhasFinanceiro(meta.financeiro),
+        styles: { fontSize: 9, cellPadding: 2 },
+        headStyles: { fillColor: [22, 120, 82] },
+        columnStyles: { 1: { halign: 'right' } },
+        theme: 'grid',
+        didParseCell: function (dados) {
+          if (dados.section === 'body' &&
+              dados.row.index === dados.table.body.length - 1) {
+            dados.cell.styles.fontStyle = 'bold';
+            dados.cell.styles.fillColor = [226, 244, 234];
+          }
+        }
+      });
+      fimY = (doc.lastAutoTable && doc.lastAutoTable.finalY) || fimY;
+    }
+
     doc.setFontSize(9);
     doc.text('Gerado em ' + agoraBR(), 14, fimY + 10);
 
@@ -327,6 +522,13 @@
     ];
     linhasTabela(resumo).forEach(function (l) { aoa.push(l); });
     aoa.push(linhaTotais(resumo));
+
+    if (meta.financeiro) {
+      aoa.push([]);
+      aoa.push(['Fechamento financeiro']);
+      linhasFinanceiro(meta.financeiro).forEach(function (l) { aoa.push(l); });
+    }
+
     aoa.push([]);
     aoa.push(['Gerado em ' + agoraBR()]);
 

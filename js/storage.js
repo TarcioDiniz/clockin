@@ -176,6 +176,44 @@
     return cfg;
   }
 
+  // ---------------------------------------------------------------
+  // Contrato financeiro (meta do mês + valores)
+  // ---------------------------------------------------------------
+
+  var CHAVE_CONTRATO = 'ponto.contrato';
+
+  /** Lê o contrato salvo neste aparelho (ou null se nunca foi salvo). */
+  function getContrato() {
+    try {
+      var bruto = localStorage.getItem(CHAVE_CONTRATO);
+      return bruto ? JSON.parse(bruto) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Grava o contrato localmente e tenta espelhar em contrato.json no
+   * repositório — assim o relatório mensal automático (GitHub Actions) usa
+   * exatamente os mesmos números. A gravação remota é BEST EFFORT: se falhar,
+   * o contrato local continua valendo e o app não trava.
+   * @returns {Promise<{local:boolean, remoto:boolean, erro?:string}>}
+   */
+  function setContrato(contrato) {
+    try {
+      localStorage.setItem(CHAVE_CONTRATO, JSON.stringify(contrato));
+    } catch (e) {
+      return Promise.resolve({ local: false, remoto: false, erro: 'Não foi possível salvar neste aparelho.' });
+    }
+    var cfg = getConfig();
+    if (modoLocal(cfg)) return Promise.resolve({ local: true, remoto: false });
+    return putArquivoJSON(cfg, 'contrato.json', contrato, 'contrato: atualiza meta e valores')
+      .then(function () { return { local: true, remoto: true }; })
+      .catch(function (err) {
+        return { local: true, remoto: false, erro: (err && err.message) || 'Falha ao enviar ao GitHub.' };
+      });
+  }
+
   /** true quando devemos operar somente com localStorage (sem rede). */
   function modoLocal(cfg) {
     cfg = cfg || getConfig();
@@ -452,6 +490,39 @@
         return resp.json().then(function (json) {
           return (json.content && json.content.sha) || null;
         });
+      });
+  }
+
+  /**
+   * Grava (ou atualiza) um JSON qualquer na raiz do repositório.
+   * Faz GET antes para descobrir o SHA quando o arquivo já existe.
+   * @returns {Promise<string|null>} SHA gravado.
+   */
+  function putArquivoJSON(cfg, caminho, obj, mensagem) {
+    var url = API_BASE + '/repos/' + encodeURIComponent(cfg.owner) + '/' +
+      encodeURIComponent(cfg.repo) + '/contents/' + caminho;
+
+    return fetch(url, { headers: cabecalhos(cfg) })
+      .catch(function (e) { throw erroDeRede(e); })
+      .then(function (resp) {
+        if (resp.status === 404) return null;          // ainda não existe
+        if (!resp.ok) throw erroHttp(resp.status, 'ler ' + caminho);
+        return resp.json().then(function (j) { return j.sha || null; });
+      })
+      .then(function (sha) {
+        var corpo = {
+          message: mensagem,
+          content: utf8ParaBase64(JSON.stringify(obj, null, 2))
+        };
+        if (sha) corpo.sha = sha;
+        return fetch(url, { method: 'PUT', headers: cabecalhos(cfg), body: JSON.stringify(corpo) })
+          .catch(function (e) { throw erroDeRede(e); })
+          .then(function (resp) {
+            if (!resp.ok) throw erroHttp(resp.status, 'salvar ' + caminho);
+            return resp.json().then(function (j) {
+              return (j.content && j.content.sha) || null;
+            });
+          });
       });
   }
 
@@ -776,6 +847,8 @@
     // Configuração
     getConfig: getConfig,
     setConfig: setConfig,
+    getContrato: getContrato,
+    setContrato: setContrato,
     // Dados
     carregarMes: carregarMes,
     salvarDia: salvarDia,
