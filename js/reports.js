@@ -541,9 +541,126 @@
     XLSX.writeFile(wb, nomeArquivo(tipo, resumo, 'xlsx'));
   }
 
+  /* ---------------- Extrato ANUAL (tela Financeiro) ----------------
+   * meses: lista de { ano, mes, totalMin, baseMin, extraMin, faltaMin,
+   *                   valorBase, valorExtra, desconto, total, temDados, parcial }
+   * Só entram no total do ano os meses com registros (temDados). */
+
+  var NOMES_MES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+  function nomeMesPt(mes) { return NOMES_MES[mes - 1] || ('Mês ' + mes); }
+
+  function totaisAnuais(meses) {
+    var t = { totalMin: 0, baseMin: 0, extraMin: 0, faltaMin: 0, valor: 0, meses: 0 };
+    (meses || []).forEach(function (m) {
+      if (!m || !m.temDados) return;
+      t.meses++;
+      t.totalMin += num(m.totalMin, 0);
+      t.baseMin += num(m.baseMin, 0);
+      t.extraMin += num(m.extraMin, 0);
+      t.faltaMin += num(m.faltaMin, 0);
+      t.valor += num(m.total, 0);
+    });
+    return t;
+  }
+
+  function linhasAnual(meses) {
+    return (meses || []).map(function (m) {
+      if (!m.temDados) {
+        return [nomeMesPt(m.mes), '—', fmtMin(m.baseMin), '—', '—', 'sem registros'];
+      }
+      var saldo = num(m.totalMin, 0) - num(m.baseMin, 0);
+      return [
+        nomeMesPt(m.mes) + (m.parcial ? ' (em andamento)' : ''),
+        fmtMin(m.totalMin),
+        fmtMin(m.baseMin),
+        fmtSaldo(saldo),
+        m.extraMin > 0 ? fmtMin(m.extraMin) : '—',
+        fmtBRL(m.total)
+      ];
+    });
+  }
+
+  function linhaTotaisAnual(meses) {
+    var t = totaisAnuais(meses);
+    return ['Total do ano (' + t.meses + ' mês/meses)', fmtMin(t.totalMin),
+      fmtMin(t.baseMin), fmtSaldo(t.totalMin - t.baseMin),
+      t.extraMin > 0 ? fmtMin(t.extraMin) : '—', fmtBRL(t.valor)];
+  }
+
+  var CABECALHO_ANUAL = ['Mês', 'Trabalhado', 'Contratado', 'Saldo', 'Extras', 'A cobrar'];
+
+  function gerarAnualPDF(ano, meses, meta) {
+    meta = meta || {};
+    var jsPDFCtor = window.jspdf && window.jspdf.jsPDF;
+    if (!jsPDFCtor) throw new Error('jsPDF não carregado (verifique o CDN no index.html).');
+
+    var doc = new jsPDFCtor({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    doc.setFontSize(16);
+    doc.text('Extrato financeiro anual — ' + ano, 14, 18);
+    doc.setFontSize(11);
+    doc.text('Colaborador: ' + (meta.nome || '—'), 14, 27);
+
+    var c = meta.contrato || {};
+    doc.text('Contrato: ' + fmtBRL(num(c.valorMensal, 0)) + '/mês, ' +
+      String(num(c.jornadaSemanalH, 0)).replace('.', ',') + 'h por semana' +
+      (num(c.multiplicadorExtra, 1) !== 1
+        ? ', extra x' + String(c.multiplicadorExtra).replace('.', ',') : ''), 14, 33);
+
+    doc.autoTable({
+      startY: 39,
+      head: [CABECALHO_ANUAL],
+      body: linhasAnual(meses),
+      foot: [linhaTotaisAnual(meses)],
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fillColor: [22, 120, 82] },
+      footStyles: { fillColor: [226, 244, 234], textColor: [20, 20, 20], fontStyle: 'bold' },
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' },
+        3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' } },
+      theme: 'grid'
+    });
+
+    var fimY = (doc.lastAutoTable && doc.lastAutoTable.finalY) || 60;
+    doc.setFontSize(9);
+    doc.text('Meses sem registros não entram no total. Gerado em ' + agoraBR(), 14, fimY + 10);
+    doc.save('ponto-anual-' + ano + '.pdf');
+  }
+
+  function gerarAnualExcel(ano, meses, meta) {
+    meta = meta || {};
+    var XLSX = window.XLSX;
+    if (!XLSX) throw new Error('SheetJS (XLSX) não carregado (verifique o CDN no index.html).');
+
+    var c = meta.contrato || {};
+    var aoa = [
+      ['Extrato financeiro anual — ' + ano],
+      ['Colaborador: ' + (meta.nome || '—')],
+      ['Contrato: ' + fmtBRL(num(c.valorMensal, 0)) + '/mês, ' +
+        String(num(c.jornadaSemanalH, 0)).replace('.', ',') + 'h por semana'],
+      [],
+      CABECALHO_ANUAL
+    ];
+    linhasAnual(meses).forEach(function (l) { aoa.push(l); });
+    aoa.push(linhaTotaisAnual(meses));
+    aoa.push([]);
+    aoa.push(['Meses sem registros não entram no total.']);
+    aoa.push(['Gerado em ' + agoraBR()]);
+
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 14 }];
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Anual ' + ano);
+    XLSX.writeFile(wb, 'ponto-anual-' + ano + '.xlsx');
+  }
+
   window.PontoRelatorios = {
     gerarPDF: gerarPDF,
-    gerarExcel: gerarExcel
+    gerarExcel: gerarExcel,
+    gerarAnualPDF: gerarAnualPDF,
+    gerarAnualExcel: gerarAnualExcel,
+    totaisAnuais: totaisAnuais,
+    nomeMesPt: nomeMesPt
   };
 
 })(typeof window !== 'undefined' ? window : this);

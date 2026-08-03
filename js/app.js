@@ -116,9 +116,14 @@
     diaHoje: null, // último dia renderizado na tela Hoje (p/ tempo em aberto)
     hist: { ano: 0, mes: 0, dias: null },
     mesHoje: null, // mapa de dias do mês corrente (p/ o card "Meta do mês")
+    fin: { ano: 0, meses: [], carregado: false, mesAberto: null },
     rel: { resumo: null, inicioISO: null, fimISO: null },
     modal: { dataISO: null, diaOriginal: null }
   };
+
+  // Cache em memória dos meses já baixados (chave "AAAA-MM") — evita refazer
+  // 12 requisições ao GitHub a cada troca de aba/ano.
+  var cacheMeses = {};
 
   /* ---------------- contrato financeiro ---------------- */
 
@@ -170,6 +175,7 @@
 
     if (nome === 'hoje') carregarHoje();
     if (nome === 'historico') carregarHistorico();
+    if (nome === 'financeiro') carregarFin();
     if (nome === 'relatorios') atualizarPrevia();
     if (nome === 'config') preencherConfig();
   }
@@ -421,6 +427,8 @@
     window.PontoStorage.carregarMes(p.ano, p.mes).then(function (res) {
       // guarda o mês inteiro: o card "Meta do mês" precisa de todos os dias
       estado.mesHoje = (res && res.dias) || {};
+      cacheMeses[chaveMes(p.ano, p.mes)] = estado.mesHoje;
+      estado.fin.carregado = false;
       renderHoje((res && res.dias && res.dias[estado.isoHoje]) || null);
     }).catch(function (err) {
       toast(msgErro(err), 'erro');
@@ -436,6 +444,8 @@
     window.PontoStorage.sincronizarPendentes().then(function (r) {
       if (r && r.enviadas > 0) {
         toast(r.enviadas + ' registro(s) pendente(s) sincronizado(s) com o GitHub.', 'ok');
+        cacheMeses = {};
+        estado.fin.carregado = false;
         if (estado.aba === 'hoje') carregarHoje();
         if (estado.aba === 'historico') carregarHistorico();
       }
@@ -484,6 +494,7 @@
       // mantém o mês em memória coerente para o card "Meta do mês"
       if (!estado.mesHoje) estado.mesHoje = {};
       if (dia) estado.mesHoje[estado.isoHoje] = dia;
+      invalidarCacheMes(estado.isoHoje);
       renderHoje(dia); // agenda/cancela o lembrete e atualiza o banner
     }).catch(function (err) {
       vibrar(250);
@@ -731,6 +742,7 @@
     window.PontoStorage.salvarDia(estado.modal.dataISO, dia).then(function () {
       toast('Dia ' + dataBR(estado.modal.dataISO) + ' salvo.', 'ok');
       vibrar(60);
+      invalidarCacheMes(estado.modal.dataISO);
       fecharModal();
       carregarHistorico();
       if (estado.modal.dataISO === estado.isoHoje) carregarHoje();
@@ -740,6 +752,300 @@
       btn.disabled = false;
       btn.textContent = 'Salvar dia';
     });
+  }
+
+  /* ================================================================
+   * TELA FINANCEIRO — acompanhamento mês a mês do ano inteiro
+   * ================================================================ */
+  function chaveMes(ano, mes) { return ano + '-' + pad2(mes); }
+
+  function invalidarCacheMes(iso) {
+    var p = partes(iso);
+    delete cacheMeses[chaveMes(p.ano, p.mes)];
+    estado.fin.carregado = false;
+  }
+
+  function carregarMesCache(ano, mes) {
+    var k = chaveMes(ano, mes);
+    if (cacheMeses[k]) return Promise.resolve(cacheMeses[k]);
+    return window.PontoStorage.carregarMes(ano, mes).then(function (res) {
+      var dias = (res && res.dias) || {};
+      cacheMeses[k] = dias;
+      return dias;
+    });
+  }
+
+  // Um mês "tem dados" quando existe pelo menos uma batida registrada.
+  // Meses sem nenhuma batida não entram no total do ano (senão um mês em
+  // branco cobraria os R$ do contrato sem nenhum trabalho lançado).
+  function mesTemDados(dias, ano, mes) {
+    var n = diasNoMes(ano, mes);
+    for (var d = 1; d <= n; d++) {
+      var x = dias[montarISO(ano, mes, d)];
+      if (x && x.batidas && x.batidas.length) return true;
+    }
+    return false;
+  }
+
+  function mudarAno(delta) {
+    estado.fin.ano += delta;
+    estado.fin.carregado = false;
+    carregarFin();
+  }
+
+  function carregarFin() {
+    if (!contratoOK()) return;
+    var ano = estado.fin.ano;
+    var hoje = partes(estado.isoHoje);
+    $('rotulo-ano').textContent = String(ano);
+    $('fin-erro').classList.add('oculto');
+
+    if (estado.fin.carregado) { renderFin(); return; }
+
+    if (ano > hoje.ano) { // ano futuro: nada a mostrar
+      estado.fin.meses = [];
+      estado.fin.carregado = true;
+      renderFin();
+      return;
+    }
+
+    var cfg = configAtual();
+    if (!configPronta(cfg)) {
+      estado.fin.meses = [];
+      estado.fin.carregado = true;
+      renderFin();
+      return;
+    }
+
+    var ultimo = (ano === hoje.ano) ? hoje.mes : 12;
+    var pedidos = [];
+    for (var m = 1; m <= ultimo; m++) pedidos.push(carregarMesCache(ano, m));
+
+    $('fin-carregando').classList.remove('oculto');
+    $('fin-lista').innerHTML = '';
+    Promise.all(pedidos).then(function (lista) {
+      estado.fin.meses = lista.map(function (dias, i) {
+        return montarMesFin(ano, i + 1, dias, hoje);
+      });
+      estado.fin.carregado = true;
+      renderFin();
+    }).catch(function (err) {
+      var e = $('fin-erro');
+      e.innerHTML = '<span>' + esc(msgErro(err)) + '</span>';
+      e.classList.remove('oculto');
+      estado.fin.meses = [];
+      renderFin();
+    }).then(function () {
+      $('fin-carregando').classList.add('oculto');
+    });
+  }
+
+  function montarMesFin(ano, mes, dias, hoje) {
+    var C = window.PontoCalc;
+    var c = contratoAtual();
+    var iniISO = montarISO(ano, mes, 1);
+    var fimISO = montarISO(ano, mes, diasNoMes(ano, mes));
+    var resumo = C.resumoPeriodo(dias, iniISO, fimISO, estado.isoHoje);
+    var atual = (ano === hoje.ano && mes === hoje.mes);
+
+    // No mês corrente soma o período ainda em aberto (mesmo número do card
+    // "Meta do mês" da aba Hoje).
+    var totalMin = resumo.totalMin + (atual ? minutosEmAberto() : 0);
+    var baseMin = C.baseMesMin(ano, mes, c);
+    var f = C.calcularValores(totalMin, baseMin, c);
+    var temDados = mesTemDados(dias, ano, mes);
+
+    return {
+      ano: ano, mes: mes, atual: atual, parcial: atual, temDados: temDados,
+      diasTrabalhados: resumo.diasTrabalhados,
+      totalMin: totalMin, baseMin: baseMin,
+      extraMin: f.extraMin, faltaMin: f.faltaMin,
+      valorHora: f.valorHora, valorBase: f.valorBase, valorExtra: f.valorExtra,
+      desconto: f.desconto, total: temDados ? f.total : 0,
+      progresso: f.progresso, contrato: f.contrato
+    };
+  }
+
+  function renderFin() {
+    var C = window.PontoCalc;
+    var R = window.PontoRelatorios;
+    var meses = estado.fin.meses || [];
+    var t = R.totaisAnuais(meses);
+
+    $('ano-total').textContent = C.fmtBRL(t.valor);
+    $('ano-horas').textContent = C.fmtMin(t.totalMin);
+    $('ano-base').textContent = C.fmtMin(t.baseMin);
+    $('ano-extras').textContent = t.extraMin > 0 ? '+' + C.fmtMin(t.extraMin) : '00:00';
+
+    var temAtual = meses.some(function (m) { return m.atual && m.temDados; });
+    $('ano-sub').textContent = t.meses === 0
+      ? 'Nenhum mês com registros em ' + estado.fin.ano + '.'
+      : t.meses + (t.meses === 1 ? ' mês com registros' : ' meses com registros') +
+        (temAtual ? ' — o mês atual ainda está em andamento.' : '.');
+
+    renderGraficoFin(meses);
+    renderListaFin(meses);
+
+    var vazio = (t.meses === 0);
+    $('btn-ano-pdf').disabled = vazio;
+    $('btn-ano-excel').disabled = vazio;
+    $('card-grafico').classList.toggle('oculto', meses.length === 0);
+  }
+
+  function renderGraficoFin(meses) {
+    var C = window.PontoCalc;
+    var el = $('fin-grafico');
+    if (!meses.length) { el.innerHTML = ''; return; }
+
+    var teto = 1;
+    meses.forEach(function (m) {
+      teto = Math.max(teto, m.totalMin, m.baseMin);
+    });
+
+    var html = '';
+    for (var i = 0; i < meses.length; i++) {
+      var m = meses[i];
+      var hBarra = Math.round((m.totalMin / teto) * 100);
+      var hMeta = Math.round((m.baseMin / teto) * 100);
+      var bateu = m.totalMin >= m.baseMin && m.baseMin > 0;
+      html += '<div class="g-col' + (m.atual ? ' atual' : '') + '" title="' +
+          esc(R_nomeMes(m.mes) + ': ' + C.fmtMin(m.totalMin) + ' de ' + C.fmtMin(m.baseMin)) + '">' +
+        '<div class="g-haste">' +
+          '<div class="g-meta" style="bottom:' + hMeta + '%"></div>' +
+          '<div class="g-barra' + (bateu ? ' ok' : '') + '" style="height:' + hBarra + '%"></div>' +
+        '</div>' +
+        '<div class="g-rot">' + esc(R_nomeMes(m.mes).slice(0, 3)) + '</div>' +
+      '</div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function R_nomeMes(mes) { return window.PontoRelatorios.nomeMesPt(mes); }
+
+  function renderListaFin(meses) {
+    var C = window.PontoCalc;
+    var el = $('fin-lista');
+    if (!meses.length) {
+      el.innerHTML = '<div class="vazio">Sem meses para mostrar neste ano.</div>';
+      return;
+    }
+    var html = '';
+    for (var i = meses.length - 1; i >= 0; i--) { // mais recente primeiro
+      var m = meses[i];
+      var saldo = m.totalMin - m.baseMin;
+      var etiqueta = '';
+      if (m.atual) etiqueta = '<span class="etiqueta et-aberto">Em andamento</span>';
+      else if (!m.temDados) etiqueta = '<span class="etiqueta et-alerta">Sem registros</span>';
+
+      html += '<button class="linha-mes' + (m.temDados ? '' : ' vazio-mes') +
+          '" type="button" data-mes="' + m.mes + '">' +
+        '<span class="mes-info">' +
+          '<span class="mes-nome">' + esc(R_nomeMes(m.mes)) + etiqueta + '</span><br>' +
+          '<span class="mes-horas">' + C.fmtMin(m.totalMin) + ' de ' + C.fmtMin(m.baseMin) +
+            (m.temDados ? ' · ' + m.diasTrabalhados + ' dia(s)' : '') + '</span>' +
+        '</span>' +
+        '<span class="mes-dir">' +
+          '<span class="mes-valor">' + (m.temDados ? C.fmtBRL(m.total) : '—') + '</span><br>' +
+          '<span class="mes-saldo ' + classeSaldo(m.temDados ? saldo : 0) + '">' +
+            (m.temDados ? C.fmtSaldo(saldo) : '') + '</span>' +
+        '</span>' +
+      '</button>';
+    }
+    el.innerHTML = html;
+
+    var linhas = el.querySelectorAll('.linha-mes');
+    for (var j = 0; j < linhas.length; j++) {
+      linhas[j].addEventListener('click', function () {
+        abrirModalMes(+this.getAttribute('data-mes'));
+      });
+    }
+  }
+
+  /* ---------- Modal com o detalhe do fechamento de um mês ---------- */
+  function abrirModalMes(mes) {
+    var C = window.PontoCalc;
+    var m = null;
+    for (var i = 0; i < estado.fin.meses.length; i++) {
+      if (estado.fin.meses[i].mes === mes) { m = estado.fin.meses[i]; break; }
+    }
+    if (!m) return;
+    estado.fin.mesAberto = m;
+
+    $('modal-mes-titulo').textContent = R_nomeMes(m.mes) + ' de ' + m.ano;
+    var pct = Math.round((m.progresso || 0) * 100);
+    var barra = $('modal-mes-barra');
+    barra.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    barra.classList.toggle('completa', m.totalMin >= m.baseMin && m.baseMin > 0);
+
+    var c = m.contrato || contratoAtual();
+    var linhas = [
+      ['Horas contratadas', C.fmtMin(m.baseMin) + ' (' + C.fmtHorasDec(m.baseMin) + ')'],
+      ['Horas trabalhadas', C.fmtMin(m.totalMin) + ' (' + C.fmtHorasDec(m.totalMin) + ')'],
+      ['Progresso', pct + '%'],
+      ['Valor da hora', C.fmtBRL(m.valorHora)],
+      ['Valor fixo do mês', C.fmtBRL(m.valorBase)]
+    ];
+    if (m.extraMin > 0) {
+      linhas.push([
+        'Horas extras' + (c.multiplicadorExtra !== 1 ? ' (×' + numBR(c.multiplicadorExtra) + ')' : ''),
+        C.fmtMin(m.extraMin) + ' = ' + C.fmtBRL(m.valorExtra)
+      ]);
+    } else if (m.faltaMin > 0) {
+      linhas.push(['Horas faltantes', '-' + C.fmtMin(m.faltaMin) +
+        (m.desconto > 0 ? ' = -' + C.fmtBRL(m.desconto) : ' (sem desconto)')]);
+    }
+    linhas.push([m.atual ? 'Previsto até agora' : 'Total a cobrar',
+      m.temDados ? C.fmtBRL(m.total) : 'R$ 0,00']);
+
+    var html = '';
+    for (var k = 0; k < linhas.length; k++) {
+      html += '<tr><td>' + esc(linhas[k][0]) + '</td><td>' + esc(linhas[k][1]) + '</td></tr>';
+    }
+    $('modal-mes-tabela').innerHTML = html;
+
+    var obs;
+    if (!m.temDados) obs = 'Nenhuma batida registrada neste mês — ele não entra no total do ano.';
+    else if (m.atual) obs = 'Mês em andamento: o valor muda conforme você bate o ponto.';
+    else if (m.extraMin > 0) obs = C.fmtHorasDec(m.extraMin) + ' acima da meta = ' +
+      C.fmtBRL(m.valorExtra) + ' de hora extra.';
+    else obs = 'Fechou ' + C.fmtHorasDec(m.faltaMin) + ' abaixo da meta' +
+      (m.desconto > 0 ? ', com desconto de ' + C.fmtBRL(m.desconto) + '.' : ' (sem desconto no valor fixo).');
+    $('modal-mes-obs').textContent = obs;
+
+    $('modal-mes').classList.remove('oculto');
+  }
+
+  function fecharModalMes() { $('modal-mes').classList.add('oculto'); }
+
+  function irParaHistoricoDoMes() {
+    var m = estado.fin.mesAberto;
+    if (!m) return;
+    fecharModalMes();
+    estado.hist.ano = m.ano;
+    estado.hist.mes = m.mes;
+    mostrarAba('historico');
+  }
+
+  function irParaRelatorioDoMes() {
+    var m = estado.fin.mesAberto;
+    if (!m) return;
+    fecharModalMes();
+    $('rel-tipo').value = 'mensal';
+    $('rel-data').value = montarISO(m.ano, m.mes, 1);
+    mostrarAba('relatorios');
+  }
+
+  function baixarAnual(formato) {
+    var meses = estado.fin.meses || [];
+    if (!meses.length) { toast('Nada para exportar neste ano.', 'erro'); return; }
+    try {
+      var meta = { nome: getNome() || 'Colaborador', contrato: contratoAtual() };
+      if (formato === 'pdf') window.PontoRelatorios.gerarAnualPDF(estado.fin.ano, meses, meta);
+      else window.PontoRelatorios.gerarAnualExcel(estado.fin.ano, meses, meta);
+      toast('Download iniciado.', 'ok');
+    } catch (err) {
+      toast(msgErro(err), 'erro');
+    }
   }
 
   /* ================================================================
@@ -991,6 +1297,7 @@
     // relatório automático do GitHub Actions usar os mesmos números.
     var contrato = contratoDosCampos();
     window.PontoCalc.setContrato(contrato);
+    estado.fin.carregado = false; // valores derivados mudaram
     window.PontoStorage.setContrato(contrato).then(function (r) {
       if (r && r.local && !r.remoto && !modoDemo()) {
         toast('Meta salva no aparelho, mas não subiu ao GitHub: ' + (r.erro || 'falha de envio'), 'erro');
@@ -1064,6 +1371,7 @@
     var p = partes(estado.isoHoje);
     estado.hist.ano = p.ano;
     estado.hist.mes = p.mes;
+    estado.fin.ano = p.ano;
     $('rel-data').value = estado.isoHoje;
 
     renderDataHoje();
@@ -1105,6 +1413,18 @@
       if (ev.target === this) fecharModal();
     });
 
+    // Financeiro
+    $('btn-ano-ant').addEventListener('click', function () { mudarAno(-1); });
+    $('btn-ano-prox').addEventListener('click', function () { mudarAno(1); });
+    $('btn-ano-pdf').addEventListener('click', function () { baixarAnual('pdf'); });
+    $('btn-ano-excel').addEventListener('click', function () { baixarAnual('excel'); });
+    $('btn-mes-fechar').addEventListener('click', fecharModalMes);
+    $('btn-mes-historico').addEventListener('click', irParaHistoricoDoMes);
+    $('btn-mes-relatorio').addEventListener('click', irParaRelatorioDoMes);
+    $('modal-mes').addEventListener('click', function (ev) {
+      if (ev.target === this) fecharModalMes();
+    });
+
     // Relatórios
     $('rel-tipo').addEventListener('change', atualizarPrevia);
     $('rel-data').addEventListener('change', atualizarPrevia);
@@ -1126,7 +1446,7 @@
     // Service Worker mínimo: habilita showNotification e instalabilidade.
     if ('serviceWorker' in navigator) {
       try {
-        navigator.serviceWorker.register('sw.js?v=3').catch(function () { /* segue sem SW */ });
+        navigator.serviceWorker.register('sw.js?v=4').catch(function () { /* segue sem SW */ });
       } catch (e) { /* ambiente sem suporte: segue sem SW */ }
     }
 

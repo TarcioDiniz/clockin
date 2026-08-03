@@ -6,7 +6,7 @@
  */
 'use strict';
 
-var CACHE = 'clockin-v3';
+var CACHE = 'clockin-v4';
 
 self.addEventListener('install', function () {
   self.skipWaiting();

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1e3a8a">
 <meta name="description" content="Ponto — controle de jornada 100% no navegador, com armazenamento no seu GitHub.">
-<link rel="manifest" href="manifest.json?v=3">
-<link rel="apple-touch-icon" href="icon-192.png?v=3">
+<link rel="manifest" href="manifest.json?v=4">
+<link rel="apple-touch-icon" href="icon-192.png?v=4">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="clockin">
@@ -181,6 +181,43 @@
   table.fin td{padding:9px 4px;border-bottom:1px solid #eceff3}
   table.fin td:last-child{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
   table.fin tr:last-child td{border-bottom:none;font-weight:800;font-size:17px;color:#0f5c34;padding-top:12px}
+
+  /* ---------- Tela Financeiro ---------- */
+  .fin-destaque{background:linear-gradient(160deg,#0f5c34,#16a34a);color:#fff;border:none}
+  .fin-destaque .titulo-secao{color:rgba(255,255,255,.75)}
+  .fin-destaque .fin-valor{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}
+  .fin-destaque .fin-sub{font-size:13px;color:rgba(255,255,255,.85);margin-top:2px}
+  .fin-destaque .fin-mini{display:flex;gap:10px;margin-top:14px}
+  .fin-destaque .fin-mini>div{flex:1;background:rgba(255,255,255,.14);border-radius:10px;padding:8px 10px}
+  .fin-destaque .fin-mini span{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:rgba(255,255,255,.75)}
+  .fin-destaque .fin-mini b{font-size:15px;font-variant-numeric:tabular-nums}
+
+  .grafico{display:flex;align-items:flex-end;gap:6px;height:132px;padding:6px 2px 0}
+  .g-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;min-width:0}
+  .g-haste{position:relative;width:100%;height:104px;background:#eef1f5;border-radius:6px;overflow:hidden}
+  .g-barra{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#3d97e8,#2f6fd0);border-radius:6px 6px 0 0;transition:height .35s ease}
+  .g-barra.ok{background:linear-gradient(180deg,#22c55e,#16a34a)}
+  .g-meta{position:absolute;left:0;right:0;height:0;border-top:2px dashed #94a3b8}
+  .g-col.atual .g-haste{outline:2px solid var(--azul-600);outline-offset:1px}
+  .g-rot{font-size:10px;font-weight:700;color:var(--cinza-400);text-transform:uppercase}
+  .g-col.atual .g-rot{color:var(--azul-700)}
+  .g-legenda{display:flex;gap:14px;justify-content:center;font-size:11.5px;color:var(--cinza-600);margin-top:8px;flex-wrap:wrap}
+  .g-legenda i{display:inline-block;width:12px;height:8px;border-radius:2px;margin-right:5px;vertical-align:1px}
+
+  .linha-mes{
+    display:flex;align-items:center;gap:12px;width:100%;text-align:left;
+    padding:12px 14px;background:var(--branco);border:1px solid var(--cinza-200);
+    border-radius:12px;margin-bottom:8px;box-shadow:var(--sombra);
+    -webkit-tap-highlight-color:transparent;
+  }
+  .linha-mes:active{background:var(--azul-50)}
+  .linha-mes.vazio-mes{opacity:.6}
+  .mes-info{flex:1;min-width:0}
+  .mes-nome{font-weight:800;font-size:15px;color:var(--azul-900);text-transform:capitalize}
+  .mes-horas{font-size:12.5px;color:var(--cinza-600);font-variant-numeric:tabular-nums}
+  .mes-dir{text-align:right;flex:0 0 auto}
+  .mes-valor{font-weight:800;font-size:15px;color:#0f5c34;font-variant-numeric:tabular-nums}
+  .mes-saldo{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
 
   /* ---------- Relatórios ---------- */
   .campo{margin-bottom:12px}
@@ -400,6 +437,50 @@
     <p class="dica" style="text-align:center;color:var(--cinza-400);font-size:12.5px;margin-top:6px">Toque em um dia para corrigir batidas, observação ou tipo.</p>
   </section>
 
+  <!-- ============ TELA FINANCEIRO ============ -->
+  <section id="tela-financeiro" class="tela" aria-label="Financeiro">
+    <div class="nav-mes">
+      <button id="btn-ano-ant" type="button" aria-label="Ano anterior">‹</button>
+      <span id="rotulo-ano">—</span>
+      <button id="btn-ano-prox" type="button" aria-label="Próximo ano">›</button>
+    </div>
+
+    <div class="cartao fin-destaque">
+      <div class="titulo-secao">Total a receber no ano</div>
+      <div class="fin-valor" id="ano-total">R$ 0,00</div>
+      <div class="fin-sub" id="ano-sub">—</div>
+      <div class="fin-mini">
+        <div><span>Trabalhado</span><b id="ano-horas">—</b></div>
+        <div><span>Contratado</span><b id="ano-base">—</b></div>
+        <div><span>Extras</span><b id="ano-extras">—</b></div>
+      </div>
+    </div>
+
+    <div id="fin-carregando" class="carregando oculto"><span class="girador"></span> Carregando meses…</div>
+    <div id="fin-erro" class="aviso aviso-vermelho oculto"></div>
+
+    <div class="cartao" id="card-grafico">
+      <div class="titulo-secao">Horas por mês</div>
+      <div class="grafico" id="fin-grafico"></div>
+      <div class="g-legenda">
+        <span><i style="background:#2f6fd0"></i>abaixo da meta</span>
+        <span><i style="background:#16a34a"></i>meta batida</span>
+        <span><i style="background:#94a3b8"></i>linha da meta</span>
+      </div>
+    </div>
+
+    <div class="cartao">
+      <div class="titulo-secao">Mês a mês</div>
+      <div id="fin-lista"></div>
+      <p class="dica" style="text-align:center;color:var(--cinza-400);font-size:12.5px;margin-top:6px">Toque em um mês para ver o detalhe do fechamento.</p>
+    </div>
+
+    <div class="botoes">
+      <button class="btn btn-primario" id="btn-ano-pdf" type="button">Extrato anual (PDF)</button>
+      <button class="btn btn-contorno" id="btn-ano-excel" type="button">Excel</button>
+    </div>
+  </section>
+
   <!-- ============ TELA RELATÓRIOS ============ -->
   <section id="tela-relatorios" class="tela" aria-label="Relatórios">
     <div class="cartao">
@@ -605,6 +686,23 @@
   </div>
 </div>
 
+<!-- ============ MODAL DETALHE DO MÊS (Financeiro) ============ -->
+<div id="modal-mes" class="modal-fundo oculto" role="dialog" aria-modal="true">
+  <div class="modal-caixa">
+    <div class="modal-topo">
+      <h2 id="modal-mes-titulo">—</h2>
+      <button class="btn-fechar" id="btn-mes-fechar" type="button" aria-label="Fechar">✕</button>
+    </div>
+    <div class="barra" style="margin-bottom:12px"><div class="barra-preench" id="modal-mes-barra" style="width:0%"></div></div>
+    <table class="fin" id="modal-mes-tabela"></table>
+    <div class="dica" id="modal-mes-obs" style="margin:8px 0 14px"></div>
+    <div class="botoes">
+      <button class="btn btn-contorno" id="btn-mes-historico" type="button">Ver no histórico</button>
+      <button class="btn btn-primario" id="btn-mes-relatorio" type="button">Relatório do mês</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" role="status"></div>
 
 <!-- ============ NAVEGAÇÃO ============ -->
@@ -616,6 +714,10 @@
   <button class="aba" data-aba="historico" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
     Histórico
+  </button>
+  <button class="aba" data-aba="financeiro" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20V10M9 20V4M15 20v-7M21 20V7"/></svg>
+    Financeiro
   </button>
   <button class="aba" data-aba="relatorios" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M9 15l2 2 4-4"/></svg>
@@ -632,9 +734,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-<!-- Módulos do app (ordem obrigatória; ?v=3 evita JS antigo do GitHub Pages) -->
-<script src="js/storage.js?v=3"></script>
-<script src="js/reports.js?v=3"></script>
-<script src="js/app.js?v=3"></script>
+<!-- Módulos do app (ordem obrigatória; ?v=4 evita JS antigo do GitHub Pages) -->
+<script src="js/storage.js?v=4"></script>
+<script src="js/reports.js?v=4"></script>
+<script src="js/app.js?v=4"></script>
 </body>
 </html>
