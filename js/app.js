@@ -7,7 +7,7 @@
 
   var TZ = 'America/Sao_Paulo';
   // Versão exibida em Config. Subir junto com o ?v= do index.html e o CACHE do sw.js.
-  var APP_VERSAO = 'v6';
+  var APP_VERSAO = 'v7';
   // Regra do usuário: intervalo (almoço) mínimo de 1h. Apenas UI — o motor
   // de cálculo (PontoCalc) não é afetado.
   var INTERVALO_MINIMO_MIN = 60;
@@ -195,6 +195,201 @@
     });
   }
   function contratoAtual() { return window.PontoCalc.getContrato(); }
+
+  /* ---------------- feriados ---------------- */
+
+  // Respostas do usuário sobre feriados regionais + região escolhida.
+  // { regiao, decisoes: { "AAAA-MM-DD": "folga"|"trabalho" } }
+  var feriadosCfg = { regiao: '', decisoes: {} };
+  var filaFeriados = [];          // feriados aguardando resposta no modal
+
+  function regiaoAtual() {
+    return window.PontoFeriados.normalizarRegiao(feriadosCfg.regiao);
+  }
+
+  // Recalcula o mapa de folgas e o entrega ao motor de cálculo. Cobre todos os
+  // anos que as telas podem mostrar (hoje, Histórico e Financeiro), com uma
+  // folga de um ano para cada lado.
+  function aplicarFeriados() {
+    var F = window.PontoFeriados;
+    var anos = [partes(estado.isoHoje || hojeISO()).ano];
+    if (estado.fin && estado.fin.ano) anos.push(estado.fin.ano);
+    if (estado.hist && estado.hist.ano) anos.push(estado.hist.ano);
+    var min = Math.min.apply(null, anos) - 1;
+    var max = Math.max.apply(null, anos) + 1;
+    var mapa = F.folgas(min + '-01-01', max + '-12-31', regiaoAtual(), feriadosCfg.decisoes);
+    window.PontoCalc.setFeriados(mapa);
+    return mapa;
+  }
+
+  function carregarFeriadosLocais() {
+    try { feriadosCfg = window.PontoStorage.getFeriados(); }
+    catch (e) { feriadosCfg = { regiao: '', decisoes: {} }; }
+    aplicarFeriados();
+  }
+
+  // Herda feriados.json do repositório (aparelho novo, ou respostas dadas em
+  // outro aparelho). Best effort — nunca bloqueia o app.
+  function herdarFeriadosRemotos() {
+    if (!window.PontoStorage.baixarFeriados) return;
+    window.PontoStorage.baixarFeriados().then(function (remoto) {
+      if (!remoto) return;
+      var mudou = remoto.regiao !== feriadosCfg.regiao;
+      // As respostas locais valem mais que as remotas: quem respondeu aqui
+      // acabou de responder. O remoto só acrescenta datas que faltavam.
+      for (var k in remoto.decisoes) {
+        if (!Object.prototype.hasOwnProperty.call(remoto.decisoes, k)) continue;
+        if (!feriadosCfg.decisoes[k]) { feriadosCfg.decisoes[k] = remoto.decisoes[k]; mudou = true; }
+      }
+      if (!feriadosCfg.regiao && remoto.regiao) feriadosCfg.regiao = remoto.regiao;
+      if (!mudou) return;
+      aplicarFeriados();
+      estado.fin.carregado = false;
+      renderHoje(estado.diaHoje);
+      atualizarBannerFeriados();
+      try { renderListaFeriados(); } catch (e) { /* Config ainda não montada */ }
+    });
+  }
+
+  function salvarFeriados() {
+    aplicarFeriados();
+    estado.fin.carregado = false;
+    return window.PontoStorage.setFeriados({
+      regiao: regiaoAtual(), decisoes: feriadosCfg.decisoes
+    });
+  }
+
+  /**
+   * Feriados regionais sem resposta, do início do contrato (ou de 1 ano atrás)
+   * até hoje. Só o passado: não faz sentido perguntar sobre dezembro em março.
+   */
+  function feriadosPendentes() {
+    var hoje = estado.isoHoje || hojeISO();
+    var c = contratoAtual();
+    var de = c.inicio || ((partes(hoje).ano - 1) + '-01-01');
+    return window.PontoFeriados.pendentes(de, hoje, regiaoAtual(), feriadosCfg.decisoes);
+  }
+
+  function atualizarBannerFeriados() {
+    var el = $('banner-feriados');
+    if (!el) return;
+    var lista = feriadosPendentes();
+    if (!lista.length || !configPronta(configAtual())) {
+      el.classList.add('oculto');
+      return;
+    }
+    var n = lista.length;
+    el.innerHTML = '<span>' +
+      (n === 1
+        ? 'Teve um feriado em <b>' + esc(window.PontoCalc.formatarDataBR(lista[0].data)) + '</b> (' +
+          esc(lista[0].nome) + '). Seu trabalho liberou esse dia?'
+        : n + ' feriados esperando sua confirmação. Toque para responder.') +
+      '</span>';
+    el.classList.remove('oculto');
+  }
+
+  function abrirFilaFeriados() {
+    filaFeriados = feriadosPendentes();
+    proximoFeriado();
+  }
+
+  function proximoFeriado() {
+    if (!filaFeriados.length) {
+      $('modal-feriado').classList.add('oculto');
+      atualizarBannerFeriados();
+      renderHoje(estado.diaHoje);
+      try { renderListaFeriados(); } catch (e) { /* ignora */ }
+      return;
+    }
+    var f = filaFeriados[0];
+    $('feriado-data').textContent = window.PontoCalc.formatarDataBR(f.data);
+    $('feriado-nome').textContent = f.nome;
+    $('feriado-escopo').textContent = f.rotulo;
+    $('feriado-contador').textContent = filaFeriados.length > 1
+      ? ('1 de ' + filaFeriados.length + ' pendentes') : '';
+    $('modal-feriado').classList.remove('oculto');
+  }
+
+  function responderFeriado(resposta) {
+    var f = filaFeriados.shift();
+    if (!f) { proximoFeriado(); return; }
+    feriadosCfg.decisoes[f.data] = resposta;
+    salvarFeriados().then(function (r) {
+      if (r && r.local && !r.remoto && !modoDemo()) {
+        toast('Salvo neste aparelho — o GitHub será atualizado depois.', 'aviso');
+      }
+    });
+    proximoFeriado();
+  }
+
+  /* Lista de feriados na Config (permite mudar de ideia depois) */
+  function anoFeriadosSelecionado() {
+    var v = +($('cfg-fer-ano') && $('cfg-fer-ano').value);
+    return v || partes(estado.isoHoje || hojeISO()).ano;
+  }
+
+  function preencherAnosFeriados() {
+    var sel = $('cfg-fer-ano');
+    if (!sel || sel.options.length) return;
+    var atual = partes(estado.isoHoje || hojeISO()).ano;
+    var html = '';
+    for (var a = atual - 1; a <= atual + 1; a++) {
+      html += '<option value="' + a + '"' + (a === atual ? ' selected' : '') + '>' + a + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  // Rótulos curtos: na lista da Config a linha é estreita e o nome do feriado
+  // já ocupa duas linhas.
+  var ROTULO_CURTO = {
+    nacional: 'nacional', estadual: 'estadual · PB',
+    municipal: 'municipal · Campina Grande', facultativo: 'ponto facultativo'
+  };
+
+  function renderListaFeriados() {
+    var el = $('cfg-fer-lista');
+    if (!el) return;
+    preencherAnosFeriados();
+    var ano = anoFeriadosSelecionado();
+    var lista = window.PontoFeriados.situacaoDoAno(ano, regiaoAtual(), feriadosCfg.decisoes);
+    if (!lista.length) { el.innerHTML = '<div class="vazio">Nenhum feriado neste ano.</div>'; return; }
+
+    var html = '';
+    for (var i = 0; i < lista.length; i++) {
+      var f = lista[i];
+      var dm = f.data.slice(8, 10) + '/' + f.data.slice(5, 7);
+      var classe = 'fer-linha' + (f.automatico ? ' auto' : (f.pendente ? ' pendente' : ''));
+      html += '<div class="' + classe + '">' +
+        '<div class="fl-data">' + dm + '</div>' +
+        '<div class="fl-txt"><div class="fl-nome">' + esc(f.nome) + '</div>' +
+        '<div class="fl-tipo">' + esc(ROTULO_CURTO[f.escopo] || f.rotulo) + '</div></div>';
+      if (f.automatico) {
+        html += '<div class="fl-fixo">folga fixa</div>';
+      } else {
+        html += '<select data-feriado="' + f.data + '">' +
+          '<option value=""' + (f.decisao ? '' : ' selected') + '>Perguntar</option>' +
+          '<option value="folga"' + (f.decisao === 'folga' ? ' selected' : '') + '>Foi folga</option>' +
+          '<option value="trabalho"' + (f.decisao === 'trabalho' ? ' selected' : '') + '>Teve expediente</option>' +
+          '</select>';
+      }
+      html += '</div>';
+    }
+    el.innerHTML = html;
+
+    var selects = el.querySelectorAll('select[data-feriado]');
+    for (var j = 0; j < selects.length; j++) {
+      selects[j].addEventListener('change', function () {
+        var data = this.getAttribute('data-feriado');
+        if (this.value) feriadosCfg.decisoes[data] = this.value;
+        else delete feriadosCfg.decisoes[data];
+        salvarFeriados();
+        renderHoje(estado.diaHoje);
+        atualizarBannerFeriados();
+        renderListaFeriados();
+        atualizarAvisoContrato();
+      });
+    }
+  }
 
   function getNome() { try { return localStorage.getItem('ponto.nome') || ''; } catch (e) { return ''; } }
   function setNome(v) { try { localStorage.setItem('ponto.nome', v); } catch (e) { /* ignora */ } }
@@ -448,6 +643,9 @@
     if (dia.tipo && dia.tipo !== 'normal') {
       avisos.innerHTML += '<div class="aviso aviso-azul"><span>Dia marcado como <b>' +
         esc(NOMES_TIPO[dia.tipo] || dia.tipo) + '</b> — meta zerada; tudo trabalhado conta como extra.</span></div>';
+    } else if (r.feriado) {
+      avisos.innerHTML += '<div class="aviso aviso-azul"><span>Hoje é <b>' +
+        esc(r.feriado) + '</b> — meta zerada. Tudo o que você bater hoje entra como hora extra.</span></div>';
     }
     if (r.aberto) {
       avisos.innerHTML += '<div class="aviso aviso-azul"><span>Período em aberto — o total inclui o tempo correndo até agora.</span></div>';
@@ -473,6 +671,7 @@
     renderIntervalo(dia);
     if (b.length === 2) agendarLembrete(dia); else cancelarLembrete();
     atualizarBannerPendentes();
+    atualizarBannerFeriados();
     renderMetaMes();
   }
 
@@ -702,6 +901,8 @@
       var etiquetas = '';
       if (dia && dia.tipo && dia.tipo !== 'normal') {
         etiquetas += '<span class="etiqueta et-tipo">' + esc(NOMES_TIPO[dia.tipo] || dia.tipo) + '</span>';
+      } else if (r.feriado) {
+        etiquetas += '<span class="etiqueta et-tipo">' + esc(r.feriado) + '</span>';
       }
       if (r.aberto && iso === estado.isoHoje) etiquetas += '<span class="etiqueta et-aberto">Em andamento</span>';
       else if (r.inconsistente) etiquetas += '<span class="etiqueta et-alerta">Inconsistente</span>';
@@ -735,6 +936,7 @@
     if (m < 1) { m = 12; h.ano--; }
     if (m > 12) { m = 1; h.ano++; }
     h.mes = m;
+    aplicarFeriados();          // idem: o ano pode ter mudado
     carregarHistorico();
   }
 
@@ -850,6 +1052,7 @@
   function mudarAno(delta) {
     estado.fin.ano += delta;
     estado.fin.carregado = false;
+    aplicarFeriados();          // o ano novo pode ter feriados ainda não mapeados
     carregarFin();
   }
 
@@ -1218,6 +1421,8 @@
       var d = porDia[i];
       var iso = d.dataISO || d.data || d.dia;
       var batidas = (d.batidas && d.batidas.length) ? d.batidas.join(' ') : '—';
+      if (d.tipo && d.tipo !== 'normal') batidas += ' (' + (NOMES_TIPO[d.tipo] || d.tipo) + ')';
+      else if (d.feriado) batidas += ' (' + d.feriado + ')';
       html += '<tr><td>' + esc(iso ? (dataBR(iso) + ' (' + diaSemanaCurto(iso) + ')') : '—') + '</td>' +
         '<td>' + esc(batidas) + '</td>' +
         '<td>' + window.PontoCalc.fmtMin(d.totalMin || 0) + '</td>' +
@@ -1370,6 +1575,8 @@
     $('cfg-token').value = cfg.token || '';
     $('cfg-demo').checked = !!cfg.demo;
     $('cfg-lembrete').checked = lembreteAtivo();
+    $('cfg-regiao').value = regiaoAtual();
+    renderListaFeriados();
     $('config-boasvindas').classList.toggle('oculto', configPronta(cfg));
   }
 
@@ -1470,6 +1677,11 @@
     estado.fin.ano = p.ano;
     $('rel-data').value = estado.isoHoje;
 
+    // Feriados: nacionais já valem sozinhos; os regionais dependem das
+    // respostas guardadas. Precisa vir antes de qualquer render.
+    carregarFeriadosLocais();
+    herdarFeriadosRemotos();
+
     renderDataHoje();
     tickRelogio();
     setInterval(tickRelogio, 1000);
@@ -1485,6 +1697,19 @@
     // Hoje
     $('btn-bater').addEventListener('click', function () { baterPonto(false); });
     $('banner-pendentes').addEventListener('click', reenviarPendentes);
+    $('banner-feriados').addEventListener('click', abrirFilaFeriados);
+
+    // Modal de confirmação de feriado regional
+    $('btn-feriado-folga').addEventListener('click', function () { responderFeriado('folga'); });
+    $('btn-feriado-trabalho').addEventListener('click', function () { responderFeriado('trabalho'); });
+    $('btn-feriado-depois').addEventListener('click', function () {
+      filaFeriados.shift();
+      proximoFeriado();
+    });
+    $('btn-feriado-fechar').addEventListener('click', function () {
+      filaFeriados = [];
+      proximoFeriado();
+    });
 
     // Modal de intervalo curto (confirmação da 3ª batida antes de 1h)
     $('btn-intervalo-fechar').addEventListener('click', fecharModalIntervalo);
@@ -1533,6 +1758,15 @@
     $('cfg-lembrete').addEventListener('change', aoMudarLembrete);
     $('cfg-base-modo').addEventListener('change', aoMudarBaseModo);
     $('cfg-inicio').addEventListener('change', atualizarAvisoContrato);
+    $('cfg-regiao').addEventListener('change', function () {
+      feriadosCfg.regiao = this.value;
+      salvarFeriados();
+      renderListaFeriados();
+      renderHoje(estado.diaHoje);
+      atualizarBannerFeriados();
+      atualizarAvisoContrato();
+    });
+    $('cfg-fer-ano').addEventListener('change', renderListaFeriados);
     $('cfg-versao').textContent = APP_VERSAO;
     $('btn-forcar-atualizacao').addEventListener('click', function () {
       toast('Atualizando…');
@@ -1548,7 +1782,7 @@
     // Service Worker mínimo: habilita showNotification e instalabilidade.
     if ('serviceWorker' in navigator) {
       try {
-        navigator.serviceWorker.register('sw.js?v=6').catch(function () { /* segue sem SW */ });
+        navigator.serviceWorker.register('sw.js?v=7').catch(function () { /* segue sem SW */ });
       } catch (e) { /* ambiente sem suporte: segue sem SW */ }
     }
 

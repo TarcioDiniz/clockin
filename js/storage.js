@@ -238,6 +238,83 @@
       });
   }
 
+  // ---------------------------------------------------------------
+  // Feriados — região + respostas do usuário sobre feriados regionais
+  // Formato: { regiao: "PB-CG", decisoes: { "AAAA-MM-DD": "folga"|"trabalho" } }
+  // ---------------------------------------------------------------
+
+  var CHAVE_FERIADOS = 'ponto.feriados';
+
+  function normalizarFeriados(obj) {
+    var saida = { regiao: '', decisoes: {} };
+    if (!obj || typeof obj !== 'object') return saida;
+    if (typeof obj.regiao === 'string') saida.regiao = obj.regiao;
+    var d = obj.decisoes;
+    if (d && typeof d === 'object') {
+      for (var k in d) {
+        if (!Object.prototype.hasOwnProperty.call(d, k)) continue;
+        if (d[k] === 'folga' || d[k] === 'trabalho') saida.decisoes[k] = d[k];
+      }
+    }
+    return saida;
+  }
+
+  /** Lê as decisões de feriado deste aparelho (nunca null). */
+  function getFeriados() {
+    try {
+      var bruto = localStorage.getItem(CHAVE_FERIADOS);
+      return normalizarFeriados(bruto ? JSON.parse(bruto) : null);
+    } catch (e) {
+      return { regiao: '', decisoes: {} };
+    }
+  }
+
+  /**
+   * Busca feriados.json no repositório. Serve para (a) um aparelho novo herdar
+   * as respostas e (b) o app não perguntar de novo o que já foi respondido em
+   * outro aparelho. Best effort: qualquer falha devolve null.
+   */
+  function baixarFeriados() {
+    var cfg = getConfig();
+    if (modoLocal(cfg) || !cfg || !cfg.owner || !cfg.repo) return Promise.resolve(null);
+    var url = API_BASE + '/repos/' + encodeURIComponent(cfg.owner) + '/' +
+      encodeURIComponent(cfg.repo) + '/contents/feriados.json';
+    return fetch(url, { headers: cabecalhos(cfg) })
+      .then(function (resp) {
+        if (!resp.ok) return null;                     // 404 = nunca foi salvo
+        return resp.json().then(function (json) {
+          if (!json || !json.content) return null;
+          var obj = normalizarFeriados(
+            JSON.parse(base64ParaUtf8(json.content.replace(/\n/g, '')))
+          );
+          try { localStorage.setItem(CHAVE_FERIADOS, JSON.stringify(obj)); } catch (e) { /* ignora */ }
+          return obj;
+        });
+      })
+      .catch(function () { return null; });
+  }
+
+  /**
+   * Grava as decisões localmente e espelha em feriados.json no repositório,
+   * para o relatório automático usar exatamente os mesmos feriados.
+   * @returns {Promise<{local:boolean, remoto:boolean, erro?:string}>}
+   */
+  function setFeriados(obj) {
+    var limpo = normalizarFeriados(obj);
+    try {
+      localStorage.setItem(CHAVE_FERIADOS, JSON.stringify(limpo));
+    } catch (e) {
+      return Promise.resolve({ local: false, remoto: false, erro: 'Não foi possível salvar neste aparelho.' });
+    }
+    var cfg = getConfig();
+    if (modoLocal(cfg)) return Promise.resolve({ local: true, remoto: false });
+    return putArquivoJSON(cfg, 'feriados.json', limpo, 'feriados: atualiza folgas confirmadas')
+      .then(function () { return { local: true, remoto: true }; })
+      .catch(function (err) {
+        return { local: true, remoto: false, erro: (err && err.message) || 'Falha ao enviar ao GitHub.' };
+      });
+  }
+
   /** true quando devemos operar somente com localStorage (sem rede). */
   function modoLocal(cfg) {
     cfg = cfg || getConfig();
@@ -873,6 +950,9 @@
     setConfig: setConfig,
     getContrato: getContrato,
     setContrato: setContrato,
+    getFeriados: getFeriados,
+    setFeriados: setFeriados,
+    baixarFeriados: baixarFeriados,
     baixarContrato: baixarContrato,
     // Dados
     carregarMes: carregarMes,

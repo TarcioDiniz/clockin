@@ -435,6 +435,147 @@ teste('julho/2026 real: 170:47 contra meta proporcional de 160:00', () => {
   }
 });
 
+/* ================================================================
+ * FERIADOS (js/feriados.js + integração com o motor de cálculo)
+ * ================================================================ */
+
+const Fer = require(path.join(__dirname, '..', 'js', 'feriados.js'));
+
+function comFeriados(mapa, fn) {
+  const antes = Calc.getFeriados();
+  try { Calc.setFeriados(mapa); fn(); } finally { Calc.setFeriados(antes); }
+}
+
+teste('Páscoa confere com o calendário litúrgico (2024-2027)', () => {
+  const iso = (a) => Fer.pascoa(a).toISOString().slice(0, 10);
+  assert.strictEqual(iso(2024), '2024-03-31');
+  assert.strictEqual(iso(2025), '2025-04-20');
+  assert.strictEqual(iso(2026), '2026-04-05');
+  assert.strictEqual(iso(2027), '2027-03-28');
+});
+
+teste('feriados móveis de 2026 saem das datas certas', () => {
+  const porData = {};
+  Fer.doAno(2026, 'PB-CG').forEach((f) => { porData[f.data] = f; });
+  assert.strictEqual(porData['2026-04-03'].nome, 'Sexta-feira Santa');
+  assert.strictEqual(porData['2026-02-17'].nome, 'Terça-feira de Carnaval');
+  assert.strictEqual(porData['2026-06-04'].nome, 'Corpus Christi');
+});
+
+teste('nacional é automático; estadual e municipal precisam de resposta', () => {
+  const porData = {};
+  Fer.situacaoDoAno(2026, 'PB-CG', {}).forEach((f) => { porData[f.data] = f; });
+  // 07/09 é nacional: folga sem perguntar nada.
+  assert.strictEqual(porData['2026-09-07'].escopo, 'nacional');
+  assert.strictEqual(porData['2026-09-07'].automatico, true);
+  assert.strictEqual(porData['2026-09-07'].folga, true);
+  assert.strictEqual(porData['2026-09-07'].pendente, false);
+  // 05/08 é estadual da Paraíba: pendente até o usuário dizer.
+  assert.strictEqual(porData['2026-08-05'].escopo, 'estadual');
+  assert.strictEqual(porData['2026-08-05'].folga, false);
+  assert.strictEqual(porData['2026-08-05'].pendente, true);
+  // 11/10 é municipal de Campina Grande.
+  assert.strictEqual(porData['2026-10-11'].escopo, 'municipal');
+  assert.strictEqual(porData['2026-10-11'].pendente, true);
+});
+
+teste('região "nenhuma" só traz nacional e facultativo', () => {
+  const datas = Fer.doAno(2026, 'nenhuma').map((f) => f.data);
+  assert.ok(datas.indexOf('2026-09-07') !== -1, 'nacional continua');
+  assert.strictEqual(datas.indexOf('2026-08-05'), -1, 'estadual da PB sai');
+  assert.strictEqual(datas.indexOf('2026-10-11'), -1, 'municipal sai');
+});
+
+teste('decisão do usuário liga e desliga o feriado regional', () => {
+  const semResposta = Fer.folgas('2026-10-01', '2026-10-31', 'PB-CG', {});
+  assert.strictEqual(semResposta['2026-10-11'], undefined);
+  assert.strictEqual(semResposta['2026-10-12'], 'Nossa Senhora Aparecida'); // nacional entra sozinho
+
+  const folga = Fer.folgas('2026-10-01', '2026-10-31', 'PB-CG', { '2026-10-11': 'folga' });
+  assert.strictEqual(folga['2026-10-11'], 'Emancipação de Campina Grande');
+
+  const trabalhou = Fer.folgas('2026-10-01', '2026-10-31', 'PB-CG', { '2026-10-11': 'trabalho' });
+  assert.strictEqual(trabalhou['2026-10-11'], undefined);
+});
+
+teste('pendentes ignora fim de semana e datas já respondidas', () => {
+  // 11/10/2026 é domingo — não adianta perguntar.
+  const p = Fer.pendentes('2026-10-01', '2026-10-31', 'PB-CG', {});
+  const datas = p.map((f) => f.data);
+  assert.strictEqual(datas.indexOf('2026-10-11'), -1, 'domingo não entra na fila');
+  assert.ok(datas.indexOf('2026-10-28') !== -1, '28/10 é quarta e entra');
+
+  const p2 = Fer.pendentes('2026-10-01', '2026-10-31', 'PB-CG', { '2026-10-28': 'trabalho' });
+  assert.strictEqual(p2.map((f) => f.data).indexOf('2026-10-28'), -1);
+});
+
+teste('feriado zera a meta do dia e some dos dias úteis do mês', () => {
+  // Setembro/2026: 22 dias de semana; 07/09 (Independência) cai numa segunda.
+  assert.strictEqual(Calc.diasUteisNoMes(2026, 9), 22);
+  comFeriados({ '2026-09-07': 'Independência do Brasil' }, () => {
+    assert.strictEqual(Calc.diasUteisNoMes(2026, 9), 21);
+    const r = Calc.calcularDia({ batidas: [], obs: '', tipo: 'normal' }, '2026-09-07');
+    assert.strictEqual(r.metaMin, 0);
+    assert.strictEqual(r.saldoMin, 0, 'não trabalhar no feriado não gera dívida');
+    assert.strictEqual(r.feriado, 'Independência do Brasil');
+  });
+});
+
+teste('trabalhar no feriado vira hora extra integral', () => {
+  comFeriados({ '2026-09-07': 'Independência do Brasil' }, () => {
+    const dia = { batidas: ['09:00', '12:00', '13:00', '18:00'], obs: '', tipo: 'normal' };
+    const r = Calc.calcularDia(dia, '2026-09-07');
+    assert.strictEqual(r.totalMin, 480);
+    assert.strictEqual(r.metaMin, 0);
+    assert.strictEqual(r.saldoMin, 480, 'as 8h do feriado são 8h de extra');
+  });
+});
+
+teste('feriado no mês baixa a meta e sobe o valor da hora', () => {
+  const original = Calc.getContrato();
+  try {
+    const c = Calc.setContrato({ valorMensal: 4500, jornadaSemanalH: 40, inicio: '' });
+    const semFeriado = Calc.baseMesMin(2026, 9, c);
+    assert.strictEqual(semFeriado, 22 * 480);
+    comFeriados({ '2026-09-07': 'Independência do Brasil' }, () => {
+      const base = Calc.baseMesMin(2026, 9, c);
+      assert.strictEqual(base, 21 * 480, 'a meta do mês perde as 8h do feriado');
+      // Trabalhando a meta do mês INTEIRA (com o feriado) o saldo é o dia extra.
+      const f = Calc.calcularValores(22 * 480, base, c);
+      assert.strictEqual(f.extraMin, 480);
+      assert.ok(f.total > 4500, 'quem trabalha no feriado recebe a mais');
+    });
+  } finally {
+    Calc.setContrato(original);
+  }
+});
+
+teste('resumoPeriodo soma o feriado como dia sem meta', () => {
+  comFeriados({ '2026-09-07': 'Independência do Brasil' }, () => {
+    const dias = { '2026-09-07': { batidas: ['09:00', '13:00'], obs: '', tipo: 'normal' } };
+    const r = Calc.resumoPeriodo(dias, '2026-09-07', '2026-09-07', '2026-09-30');
+    assert.strictEqual(r.metaMin, 0);
+    assert.strictEqual(r.totalMin, 240);
+    assert.strictEqual(r.saldoMin, 240);
+    assert.strictEqual(r.diasUteis, 0, 'feriado não conta como dia útil');
+    assert.strictEqual(r.diasTrabalhados, 1);
+    assert.strictEqual(r.porDia[0].feriado, 'Independência do Brasil');
+  });
+});
+
+teste('tipo manual do dia continua valendo em cima do feriado', () => {
+  comFeriados({ '2026-09-07': 'Independência do Brasil' }, () => {
+    const r = Calc.calcularDia({ batidas: [], obs: '', tipo: 'ferias' }, '2026-09-07');
+    assert.strictEqual(r.metaMin, 0);
+  });
+});
+
+teste('julho/2026 não tem feriado — o fechamento não muda', () => {
+  const folgas = Fer.folgas('2026-07-01', '2026-07-31', 'PB-CG', {});
+  assert.deepStrictEqual(Object.keys(folgas), []);
+});
+
+
 console.log('');
 console.log('Total: ' + (passaram + falharam) + ' | Passaram: ' + passaram + ' | Falharam: ' + falharam);
 if (falharam > 0) process.exit(1);

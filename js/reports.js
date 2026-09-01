@@ -165,6 +165,25 @@
     return Math.round(normalizarContrato(contrato || contratoAtivo).jornadaSemanalH * 60 / 5);
   }
 
+  /* ---------------- feriados ---------------- */
+
+  // Mapa { "AAAA-MM-DD": "nome do feriado" } dos dias SEM meta. Quem monta é
+  // o app (ou o gerador Node), a partir de js/feriados.js + das respostas do
+  // usuário sobre feriados municipais/estaduais. Aqui só se consome.
+  var feriadosAtivos = {};
+
+  function setFeriados(mapa) {
+    feriadosAtivos = (mapa && typeof mapa === 'object') ? mapa : {};
+    return feriadosAtivos;
+  }
+  function getFeriados() { return feriadosAtivos; }
+
+  /** Nome do feriado da data, ou '' se for dia comum. */
+  function feriadoDe(dataISO) {
+    var v = feriadosAtivos[dataISO];
+    return (typeof v === 'string' && v) ? v : (v ? 'Feriado' : '');
+  }
+
   function diasNoMes(ano, mes) {
     return new Date(Date.UTC(ano, mes, 0)).getUTCDate();
   }
@@ -172,6 +191,8 @@
   // Dias úteis (seg-sex) do mês inteiro, independente de "hoje".
   // Com inicioISO, conta só os dias úteis a partir do 1º dia do contrato —
   // é o que faz o mês de entrada ter meta proporcional.
+  // Feriados ativos NÃO contam: é o que faz a meta do mês encolher no mês em
+  // que cai um feriado, e o que transforma o dia trabalhado em hora extra.
   function diasUteisNoMes(ano, mes, inicioISO) {
     var ini = dataContrato(inicioISO);
     var n = diasNoMes(ano, mes), c = 0, min = 1;
@@ -180,9 +201,12 @@
       if (ano < ia || (ano === ia && mes < im)) return 0;   // mês antes do contrato
       if (ano === ia && mes === im) min = +p[2];
     }
+    var pre = ano + '-' + pad2(mes) + '-';
     for (var d = min; d <= n; d++) {
       var dow = new Date(Date.UTC(ano, mes - 1, d)).getUTCDay();
-      if (dow >= 1 && dow <= 5) c++;
+      if (dow < 1 || dow > 5) continue;
+      if (feriadosAtivos[pre + pad2(d)]) continue;          // feriado não é dia útil
+      c++;
     }
     return c;
   }
@@ -277,9 +301,12 @@
     // Meta: metaDia em dia útil; sáb/dom e tipos ESPECIAIS do contrato = 0.
     // Tipo desconhecido NÃO zera a meta (mesma whitelist do gerador Node).
     // Antes do 1º dia do contrato não existe meta (não gera saldo devedor).
+    // Feriado ativo (nacional automático, ou regional que o usuário confirmou
+    // como folga) zera a meta: o que for trabalhado ali é 100% hora extra.
     var especial = TIPOS_ESPECIAIS.indexOf(tipo) !== -1;
     var antesDoContrato = !!(contratoAtivo.inicio && dataISO < contratoAtivo.inicio);
-    var metaMin = (!especial && !antesDoContrato && ehDiaUtil(dataISO)) ? metaDia : 0;
+    var feriado = feriadoDe(dataISO);
+    var metaMin = (!especial && !antesDoContrato && !feriado && ehDiaUtil(dataISO)) ? metaDia : 0;
 
     // Número ímpar de batidas: período em aberto. Em dia fechado a última
     // batida sem par é ignorada no total e o dia é sinalizado inconsistente.
@@ -312,7 +339,8 @@
       saldoMin: totalMin - metaMin,
       periodos: periodos,
       aberto: aberto,
-      inconsistente: inconsistente
+      inconsistente: inconsistente,
+      feriado: feriado
     };
   }
 
@@ -346,6 +374,7 @@
         obs: (dia && dia.obs) || '',
         tipo: (dia && dia.tipo) || 'normal',
         futuro: futuro,
+        feriado: calc.feriado,
         totalMin: calc.totalMin,
         metaMin: calc.metaMin,
         saldoMin: calc.saldoMin,
@@ -414,6 +443,9 @@
     setContrato: setContrato,
     getContrato: getContrato,
     metaDiaMin: metaDiaMin,
+    setFeriados: setFeriados,
+    getFeriados: getFeriados,
+    feriadoDe: feriadoDe,
     diasUteisNoMes: diasUteisNoMes,
     mesForaDoContrato: mesForaDoContrato,
     baseMesMin: baseMesMin,
@@ -441,6 +473,8 @@
       var batidas = d.batidas.join(' ');
       if (d.tipo && d.tipo !== 'normal') {
         batidas = (batidas ? batidas + ' ' : '') + '(' + d.tipo + ')';
+      } else if (d.feriado) {
+        batidas = (batidas ? batidas + ' ' : '') + '(' + d.feriado + ')';
       }
       if (d.inconsistente) batidas += ' (!)';
       return [
